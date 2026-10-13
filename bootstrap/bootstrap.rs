@@ -142,6 +142,8 @@ pub extern "C" fn _start() -> ! {
     // from a compressed dzImage file. It initializes the serial port, framebuffer, and other necessary components before 
     // loading the kernel into memory and transferring control to it.
     let (tsc_start, tsc_frequency) = time::init();
+    let _ = tsc_start;
+    let _ = tsc_frequency;
     serial_init();
     framebuffer::init(
         FRAMEBUFFER_REQUEST
@@ -269,7 +271,7 @@ fn reserve_page_table_tree(
     // User address spaces share Limine's upper-half mappings.
     if reserved[..*reserved_count].iter().any(|range| {
         table_physical >= range.start
-            && table_physical < range.start.checked_add(range.length).unwrap_or(u64::MAX)
+            && table_physical < range.start.saturating_add(range.length)
     }) {
         return Ok(());
     }
@@ -317,12 +319,10 @@ fn sort_and_merge_ranges(ranges: &mut [PhysicalRange]) -> usize {
     for index in 1..ranges.len() {
         let end = ranges[merged]
             .start
-            .checked_add(ranges[merged].length)
-            .unwrap_or(u64::MAX);
+            .saturating_add(ranges[merged].length);
         let next_end = ranges[index]
             .start
-            .checked_add(ranges[index].length)
-            .unwrap_or(u64::MAX);
+            .saturating_add(ranges[index].length);
         if ranges[index].start <= end {
             ranges[merged].length = end.max(next_end) - ranges[merged].start;
         } else {
@@ -603,22 +603,28 @@ fn serial_write_byte(byte: u8) {
 }
 
 unsafe fn out(port: u16, value: u8) {
-    asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
+    // SAFETY: escreve numa porta de E/S do controlador serial.
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 unsafe fn in_port(port: u16) -> u8 {
     let value: u8;
-    asm!(
-        "in al, dx",
-        in("dx") port,
-        out("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
+    // SAFETY: lê o registro de status do controlador serial.
+    unsafe {
+        asm!(
+            "in al, dx",
+            in("dx") port,
+            out("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
     value
 }
 

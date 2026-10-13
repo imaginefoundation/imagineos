@@ -291,10 +291,11 @@ pub const INPUT_MOUSE_MOVE: u32 = 2;
 pub const INPUT_MOUSE_BUTTON: u32 = 3;
 
 /// A base do espaço virtual onde os buffers de superfície são mapeados. Fica
-/// acima da heap (`USER_HEAP_LIMIT` = 64 MiB sobre `0x1_0000_0000`) e longe
-/// do framebuffer (`0x4000_0000_0000`). Cada superfície recebe uma fatia
-/// alinhada de 1 MiB, então o endereço do cliente nunca colide.
-pub const SURFACE_REGION_BASE: u64 = 0x0000_0001_4000_0000;
+/// bem longe da heap (`USER_HEAP_LIMIT` = 64 MiB sobre `0x1_0000_0000`; a base
+/// aqui é +256 MiB) e do framebuffer (`0x4000_0000_0000`). Cada superfície
+/// recebe uma fatia alinhada de 1 MiB, então o endereço do cliente nunca
+/// colide.
+pub const SURFACE_REGION_BASE: u64 = 0x0000_0002_4000_0000;
 pub const SURFACE_REGION_STRIDE: u64 = 0x10_0000; // 1 MiB
 
 /// Um evento de entrada em formato fixo (sem ponteiros).

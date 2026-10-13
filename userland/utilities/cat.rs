@@ -42,7 +42,7 @@ extern "C" fn _start(
             continue;
         };
         let mut resolved = [0u8; 256];
-        let Some(path_length) = common::resolve_path(envp, envc, path, &mut resolved) else {
+        let Some(path_length) = (unsafe { common::resolve_path(envp, envc, path, &mut resolved) }) else {
             common::write(b"cat: path too long\n");
             continue;
         };

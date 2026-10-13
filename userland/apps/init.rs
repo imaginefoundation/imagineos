@@ -70,7 +70,7 @@ fn phase_two_started() -> bool {
 }
 
 fn run_supervisor() -> ! {
-    if imagineos::console::write_all(b"Astrid init: PID 1 supervising the system\n").is_err() {
+    if imagineos::console::write_all(b"init: PID 1 supervising the system\n").is_err() {
         imagineos::process::exit(1);
     }
     // Supervisor de serviços: quando /etc/init contém "horust", o PID 1

@@ -19,7 +19,7 @@ extern "C" fn _start(
     for index in 1..argc {
         if let Some(argument) = unsafe { common::argument(argv, index) } {
             let mut path = [0u8; 256];
-            match common::resolve_path(envp, envc, argument, &mut path) {
+            match unsafe { common::resolve_path(envp, envc, argument, &mut path) } {
                 Some(length) if common::touch(&path[..length]) >= 0 => {}
                 _ => {
                     common::write(b"touch: cannot create file\n");

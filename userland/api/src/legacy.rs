@@ -1,18 +1,29 @@
 use crate::{args, console, fs, process};
 
+/// # Safety
+/// `argv` deve apontar para o vetor de argumentos recebido em `_start`.
 pub unsafe fn argument(argv: *const *const u8, index: usize) -> Option<&'static [u8]> {
-    args::argument(argv, index.saturating_add(1), index)
+    // SAFETY: o contrato é o mesmo de `args::argument` (argv válido do _start).
+    unsafe { args::argument(argv, index.saturating_add(1), index) }
 }
 
+/// # Safety
+/// `envp` deve apontar para o vetor de ambiente recebido em `_start`.
 pub unsafe fn environment_value(
     envp: *const *const u8,
     count: usize,
     name: &[u8],
 ) -> Option<&'static [u8]> {
-    args::environment_value(envp, count, name)
+    // SAFETY: o contrato é o mesmo de `args::environment_value`.
+    unsafe { args::environment_value(envp, count, name) }
 }
 
-pub fn resolve_path(
+/// # Safety
+/// `envp` deve apontar para o vetor de ambiente recebido em `_start`.
+///
+/// Empacota a leitura de `PWD` (unsafe) atrás de uma API que só depende do
+/// ponteiro contratado; usado por todas as utilities via `common`.
+pub unsafe fn resolve_path(
     envp: *const *const u8,
     envc: usize,
     path: &[u8],

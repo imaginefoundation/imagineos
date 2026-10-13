@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
-
-#[allow(dead_code)]
-
+// Código de kernel: funções `unsafe fn` usam operações unsafe no corpo por
+// contrato (asm de E/S, voláteis de MMIO). Edition 2024 pede blocos internos;
+// mantemos o estilo legado de contrato-por-função até uma revisão completa.
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::arch::asm;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -310,11 +311,8 @@ fn mask_legacy_pic() {
 }
 
 /// Escreve um número hexadecimal na serial (diagnóstico).
-///
-/// É hexadecimal porque endereços são lidos nesse formato; usar decimal com um
-/// prefixo "0x" foi o que tornou `0x400a40` ilegível como `0x4196928` durante a
-/// depuração do `fork`.
 #[cfg(feature = "kernel-debug")]
+#[allow(dead_code)]
 pub(crate) fn serial_write_hex(mut value: u64) {
     if value == 0 {
         serial_write(b"0");

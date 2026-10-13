@@ -17,7 +17,7 @@ use imagineos_abi::{
     SYS_DUP, SYS_DUP2, SYS_PIPE, SYS_SPAWN, SYS_FORK, SYS_WAITPID, SYS_EXECVE,
     SYS_FB_INFO, SYS_FB_MAP, SYS_INPUT_POLL, SYS_CONSOLE_RELEASE, SYS_POINTER_POSITION,
     SYS_SURFACE_CREATE, SYS_SURFACE_PRESENT, SYS_SURFACE_FLUSH, SYS_SURFACE_DESTROY,
-    SYS_SURFACE_POLL, SYS_SURFACE_SNAPSHOT, SYS_SURFACE_SEND_EVENT, SYS_PIVOT_ROOT, WNOHANG,
+    SYS_SURFACE_POLL, SYS_SURFACE_SNAPSHOT, SYS_SURFACE_SEND_EVENT, SYS_PIVOT_ROOT,
 };
 
 struct SharedKeyboard(UnsafeCell<Keyboard>);
@@ -1043,6 +1043,17 @@ fn surface_snapshot(frame: &mut TrapFrame) -> *mut TrapFrame {
         return frame;
     }
     let mut output = [imagineos_abi::SurfaceSnapshot::default(); MAX_OUTPUT];
+    // Consome a fila de frames novos: sem isto o servidor redesenha superfícies
+    // antigas a cada quadro e a fila satura (o `take_dirty` devolve os ids).
+    let mut dirty_ids = [0u32; MAX_OUTPUT];
+    let mut dirty_count = 0;
+    while let Some(id) = crate::surface::take_dirty() {
+        if dirty_count < MAX_OUTPUT {
+            dirty_ids[dirty_count] = id;
+            dirty_count += 1;
+        }
+    }
+    let _ = dirty_count;
     let count = crate::surface::snapshot_mapped(&mut output[..capacity]);
     let bytes = unsafe {
         core::slice::from_raw_parts(

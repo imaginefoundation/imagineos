@@ -36,6 +36,8 @@ impl Surface {
             return Err(Error::INVALID_ARGUMENT);
         }
         let mut info = SurfaceInfo::default();
+        info.width = width as u32;
+        info.height = height as u32;
         checked(syscall::invoke(
             crate::abi::SYS_SURFACE_CREATE,
             [(&mut info as *mut SurfaceInfo) as u64, 0, 0, 0, 0, 0],
