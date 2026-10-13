@@ -127,7 +127,6 @@ fn surfaces() -> &'static mut Surfaces {
 }
 
 /// Erros de superfície devolvidos como -errno.
-pub const EAGAIN: i64 = -11;
 pub const EINVAL: i64 = -22;
 pub const ENOSPC: i64 = -28;
 pub const ENOENT: i64 = -2;
@@ -145,9 +144,11 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
     }
     let surfaces = surfaces();
     let Some(slot) = (0..MAX_SURFACES).find(|&index| surfaces.slots[index].physical == 0) else {
+        let _ = crate::kernel_log::append(b"surface: no free slots\n");
         return Err(ENOSPC);
     };
     let Some(frame) = crate::memory::allocate_frame() else {
+        let _ = crate::kernel_log::append(b"surface: no frames\n");
         return Err(ENOSPC);
     };
     let pid = crate::process::current_pid();
@@ -166,6 +167,7 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
         )
     });
     if mapped.is_none() {
+        let _ = crate::kernel_log::append(b"surface: map failed\n");
         return Err(ENOSPC);
     }
     surfaces.slots[slot] = Surface {
@@ -325,6 +327,10 @@ pub fn set_server() {
 ///
 /// O roteamento é por dono: o compositor traduz a posição global do mouse na
 /// superfície sob o cursor e chama `push_event_for(pid, ...)`.
+/// Entrega um evento ao dono da superfície indicada. Usado pelo servidor
+/// para encaminhar teclas ao cliente focado (o compositor chama a variante
+/// por superfície).
+#[allow(dead_code)]
 pub fn push_event_for(pid: usize, event: SurfaceEvent) {
     let surfaces = surfaces();
     let _ = surfaces.events[pid % imagineas_max()].push(event);
@@ -345,7 +351,9 @@ pub fn push_event_to_surface(surface_id: u32, event: SurfaceEvent) -> bool {
     surfaces.events[index].push(event)
 }
 
-/// Notifica o dono que a superfície foi escondida pelo WM.
+/// Notifica o dono que a superfície foi escondida pelo WM (usado quando o
+/// compositor minimiza/fecha janelas de clientes).
+#[allow(dead_code)]
 pub fn notify_hidden(surface_id: u32) {
     let _ = push_event_to_surface(
         surface_id,

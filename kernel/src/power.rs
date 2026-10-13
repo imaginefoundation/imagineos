@@ -142,14 +142,16 @@ pub fn power_off() -> Result<(), BlockError> {
 }
 
 unsafe fn out_byte(port: u16, value: u8) {
-    asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
+    // SAFETY: escrita em porta de E/S x86.
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
-
 fn write_pm1_sleep(register: AcpiRegister, sleep_type: u16, hhdm_offset: u64) -> Option<()> {
     let previous = unsafe { read_register(register, hhdm_offset)? };
     let value = pm1_sleep_value(previous, sleep_type);

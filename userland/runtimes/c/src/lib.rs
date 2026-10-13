@@ -78,8 +78,13 @@ pub unsafe extern "C" fn c_runtime_init(
     if imagineos::syscall::abi_version() != Ok(imagineos::abi::ABI_VERSION) {
         c_exit(2);
     }
-    environ = envp;
-    c_exit(main(argc, argv));
+    
+    // Envolvemos o acesso à variável mutável estática e a chamada à função 'main' 
+    // num bloco unsafe para satisfazer a regra unsafe_op_in_unsafe_fn da edição 2024.
+    unsafe {
+        environ = envp;
+        c_exit(main(argc, argv));
+    }
 }
 
 /// Termina o processo com o código informado.

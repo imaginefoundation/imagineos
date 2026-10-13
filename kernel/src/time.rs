@@ -63,6 +63,9 @@ pub fn configure_timer_interrupt() {
 /// collides with the CPU exception vectors. Without this remap an IRQ0 would be
 /// delivered as vector 0x08 (double fault) instead of the IDT entry at 0x20.
 unsafe fn remap_pic() {
+    // SAFETY: programação do 8259 só é feita uma vez, antes de as
+    // interrupções serem habilitadas (ver doc da função).
+    unsafe {
     const PIC1: u16 = 0x20;
     const PIC1_COMMAND: u16 = 0x20;
     const PIC1_DATA: u16 = 0x21;
@@ -84,12 +87,16 @@ unsafe fn remap_pic() {
     // Restore the previous masks; the caller unmasks only IRQ0.
     out_byte(PIC1_DATA, saved1 | 0x01);
     out_byte(PIC2_DATA, saved2);
+    }
 }
 
 /// Reads a byte from an x86 I/O port.
 unsafe fn in_byte(port: u16) -> u8 {
     let value: u8;
-    asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
+    // SAFETY: leitura de uma porta de E/S x86 (I/O space).
+    unsafe {
+        asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
+    }
     value
 }
 
@@ -198,6 +205,7 @@ fn cpuid_tsc_frequency() -> Option<u64> {
 fn read_tsc() -> u64 {
     let low: u32;
     let high: u32;
+    // SAFETY: `rdtsc` é inofensivo (leitura de contador do processador).
     unsafe {
         asm!(
             "rdtsc",
@@ -231,10 +239,13 @@ fn write_decimal(output: &mut [u8], mut value: u64, minimum_digits: usize) -> us
 }
 
 unsafe fn out_byte(port: u16, value: u8) {
-    asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
+    // SAFETY: escrita em uma porta de E/S x86 (I/O space).
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }

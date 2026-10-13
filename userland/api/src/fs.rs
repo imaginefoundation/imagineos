@@ -48,11 +48,11 @@ impl OpenOptions {
     }
 
     fn flags(self) -> u64 {
-        u64::from(self.read) * crate::abi::OPEN_READ
-            | u64::from(self.write) * crate::abi::OPEN_WRITE
-            | u64::from(self.create) * crate::abi::OPEN_CREATE
-            | u64::from(self.truncate) * crate::abi::OPEN_TRUNCATE
-            | u64::from(self.append) * crate::abi::OPEN_APPEND
+        (u64::from(self.read) * crate::abi::OPEN_READ)
+            | (u64::from(self.write) * crate::abi::OPEN_WRITE)
+            | (u64::from(self.create) * crate::abi::OPEN_CREATE)
+            | (u64::from(self.truncate) * crate::abi::OPEN_TRUNCATE)
+            | (u64::from(self.append) * crate::abi::OPEN_APPEND)
     }
 }
 

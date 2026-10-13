@@ -36,11 +36,13 @@ pub struct BootInfo {
 impl BootInfo {
     #[allow(dead_code)]
     pub unsafe fn memory_entries(&self) -> &[&'static Entry] {
-        (&*self.memory_map).entries()
+        // SAFETY: o memory map foi validado pelo Limine no boot.
+        unsafe { (&*self.memory_map).entries() }
     }
-
     #[allow(dead_code)]
     pub unsafe fn reserved(&self) -> &[PhysicalRange] {
-        core::slice::from_raw_parts(self.reserved_ranges, self.reserved_count)
+        // SAFETY: `reserved_ranges`/`reserved_count` são preenchidos
+        // exclusivamente pelo bootstrap no boot.
+        unsafe { core::slice::from_raw_parts(self.reserved_ranges, self.reserved_count) }
     }
 }

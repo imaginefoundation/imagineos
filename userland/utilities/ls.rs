@@ -76,7 +76,7 @@ extern "C" fn _start(
         common::environment_value(envp, envc, b"PWD").unwrap_or(b"/")
     });
     let mut path = [0u8; 256];
-    let Some(path_length) = common::resolve_path(envp, envc, requested, &mut path) else {
+    let Some(path_length) = (unsafe { common::resolve_path(envp, envc, requested, &mut path) }) else {
         common::write(b"ls: path too long\n");
         common::exit(2);
     };

@@ -445,7 +445,7 @@ fn draw_glyph(console: &mut Console, character: char) {
     }
     erase_cell(console, console.cursor_x, console.cursor_y);
     let start = console.glyph_offset + glyph * console.glyph_bytes;
-    let row_bytes = (console.font_width + 7) / 8;
+    let row_bytes = console.font_width.div_ceil(8);
     for row in 0..console.font_height {
         for column in 0..console.font_width {
             let byte_index = start + row * row_bytes + column / 8;

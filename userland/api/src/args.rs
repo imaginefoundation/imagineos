@@ -8,23 +8,22 @@ pub unsafe fn argument<'a>(argv: *const *const u8, count: usize, index: usize) -
     if index >= count || argv.is_null() {
         return None;
     }
-    let pointer = *argv.add(index);
-    c_string(pointer)
+    // SAFETY: contratado pelo chamador (`argv` válido com `count` entradas).
+    let pointer = unsafe { *argv.add(index) };
+    unsafe { c_string(pointer) }
 }
 
-/// Finds a `NAME=value` item in the process environment vector.
-///
 /// # Safety
-/// `envp` must point to an array of at least `count` readable pointers, and
-/// every non-null entry must point to readable memory containing a NUL byte
-/// within 256 bytes.
+/// `envp` must point to an array of at least `count` readable pointers.
 pub unsafe fn environment_value<'a>(
     envp: *const *const u8,
     count: usize,
     name: &[u8],
 ) -> Option<&'a [u8]> {
     for index in 0..count {
-        let Some(entry) = argument(envp, count, index) else {
+        // SAFETY: contratado pelo chamador (ver doc da função).
+        let entry = unsafe { argument(envp, count, index) };
+        let Some(entry) = entry else {
             continue;
         };
         if entry.starts_with(name) && entry.get(name.len()) == Some(&b'=') {
@@ -34,6 +33,8 @@ pub unsafe fn environment_value<'a>(
     None
 }
 
+/// Resolve `path` contra o diretório corrente (`PWD`), devolvendo o caminho
+/// absoluto em `output`.
 pub fn resolve_path(cwd: Option<&[u8]>, path: &[u8], output: &mut [u8]) -> Option<usize> {
     if path.starts_with(b"/") {
         if path.len() > output.len() {
@@ -79,8 +80,10 @@ unsafe fn c_string<'a>(pointer: *const u8) -> Option<&'a [u8]> {
         return None;
     }
     let mut length = 0usize;
-    while length < 256 && *pointer.add(length) != 0 {
+    // SAFETY: contratado pelo chamador: o ponteiro aponta para memória
+    // legível com um NUL nos primeiros 256 bytes.
+    while length < 256 && unsafe { *pointer.add(length) } != 0 {
         length += 1;
     }
-    Some(core::slice::from_raw_parts(pointer, length))
+    Some(unsafe { core::slice::from_raw_parts(pointer, length) })
 }
