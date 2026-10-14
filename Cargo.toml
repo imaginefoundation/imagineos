@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["shared/abi", "userland/api", "userland/runtimes/rust", "userland/runtimes/c"]
+members = ["shared/abi", "userland/api", "userland/runtimes/ImagineRustRuntime", "userland/runtimes/ImagineCRuntime"]
 resolver = "2"
 
 [dependencies]

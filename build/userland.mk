@@ -15,7 +15,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
 .PHONY: user-programs user-libs tcc-source c-app
 
-user-programs: $(USER_PROGRAMS) $(EDE_PROGRAMS)
+user-programs: $(USER_PROGRAMS) $(EDE_PROGRAMS) $(LIMINAL_PROGRAMS)
 
 user-libs: $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/user/crt_empty.o
 
@@ -28,7 +28,7 @@ $(USER_API_RLIB): $(USER_API_MANIFEST) $(wildcard $(ROOT)/userland/api/src/*.rs)
 	$(CARGO) build --manifest-path $(USER_API_MANIFEST) \
 		--target $(TARGET) --release --target-dir $(USER_API_TARGET_DIR)
 
-$(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/rust/src/lib.rs $(USER_API_RLIB)
+$(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/ImagineRustRuntime/src/lib.rs $(USER_API_RLIB)
 	$(CARGO) build --manifest-path $(USER_RUNTIME_MANIFEST) \
 		--target $(TARGET) --release --target-dir $(USER_RUNTIME_TARGET_DIR)
 
@@ -36,8 +36,8 @@ $(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/rust/sr
 # Programas Rust de userspace
 # ------------------------------------------------------------------------------
 
-# # Apps principais (init, getty, horust) em userland/apps/
-$(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/apps/%.rs $(ROOT)/userland/linker.ld \
+# Apps principais (init, getty) em userland/programs/
+$(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/programs/%.rs $(ROOT)/userland/linker.ld \
                           $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name $* --edition 2024 --target $(TARGET) \
@@ -46,9 +46,9 @@ $(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/apps/%.rs $(ROOT)/userland/linker.ld 
 		-C panic=abort -C relocation-model=static \
 		-C link-arg=-T$(ROOT)/userland/linker.ld $< -o $@
 
-# O shell é um binário multi-módulo (`userland/apps/shell/`), então tem regra
-# própria: o padrão `%.rs` não cobre `main.rs` mais os módulos irmãos.
-SHELL_SOURCES := $(wildcard $(ROOT)/userland/apps/shell/*.rs)
+# O shell é um binário multi-módulo (`userland/programs/shell/`), então tem
+# regra própria: o padrão `%.rs` não cobre `main.rs` mais os módulos irmãos.
+SHELL_SOURCES := $(wildcard $(ROOT)/userland/programs/shell/*.rs)
 
 $(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/userland/linker.ld \
                              $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
@@ -58,14 +58,14 @@ $(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/u
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/shell/main.rs -o $@
+	$(ROOT)/userland/programs/shell/main.rs -o $@
 
-# Horust (init-style): multi-módulo em userland/apps/horust/, instalado em
-# /sbin/horust. O horust-lite.rs raiz é o binário; os módulos ficam ao lado.
-HORUST_SOURCES := $(wildcard $(ROOT)/userland/apps/horust/*.rs)
+# Horust (init-style): multi-módulo em userland/programs/horust/, instalado
+# em /sbin/horust. O horust-lite.rs raiz é o binário; os módulos ficam ao lado.
+HORUST_SOURCES := $(wildcard $(ROOT)/userland/programs/horust/*.rs)
 
 $(BUILD_DIR)/user/sbin/horust: $(filter-out %/tests.rs,$(HORUST_SOURCES)) \
-                               $(ROOT)/userland/apps/horust-lite.rs \
+                               $(ROOT)/userland/programs/horust-lite.rs \
                                $(ROOT)/userland/linker.ld $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name horust --edition 2024 --target $(TARGET) \
@@ -73,20 +73,36 @@ $(BUILD_DIR)/user/sbin/horust: $(filter-out %/tests.rs,$(HORUST_SOURCES)) \
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/horust-lite.rs -o $@
+	$(ROOT)/userland/programs/horust-lite.rs -o $@
 
-# Display server/window manager (multi-module, separado em seu diretório).
-DISPLAY_SOURCES := $(wildcard $(ROOT)/userland/apps/display/*.rs)
+# Liminal stack: o liminalServer é o display server (framebuffer, composição
+# em backbuffer, eventos); o liminalClient é o window manager/compositor
+# (janelas, temas .tpf, apps .xapp).
+LIMINAL_SERVER_SOURCES := $(wildcard $(ROOT)/userland/programs/liminalServer/*.rs)
 
-$(BUILD_DIR)/user/utilities/display: $(DISPLAY_SOURCES) $(ROOT)/userland/linker.ld \
-                                    $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
+$(BUILD_DIR)/user/bin/liminal-server: $(LIMINAL_SERVER_SOURCES) $(ROOT)/userland/linker.ld \
+                                     $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
-	$(RUSTC) --crate-name display --edition 2024 --target $(TARGET) \
+	$(RUSTC) --crate-name liminal_server --edition 2024 --target $(TARGET) \
 	--extern imagineos=$(USER_API_RLIB) --extern imagineos_rt=$(USER_RUNTIME_RLIB) \
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/display/main.rs -o $@
+	$(ROOT)/userland/programs/liminalServer/main.rs -o $@
+
+LIMINAL_CLIENT_SOURCES := $(wildcard $(ROOT)/userland/programs/liminalClient/*.rs)
+
+$(BUILD_DIR)/user/bin/liminal-client: $(LIMINAL_CLIENT_SOURCES) $(ROOT)/userland/linker.ld \
+                                     $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) --crate-name liminal_client --edition 2024 --target $(TARGET) \
+	--extern imagineos=$(USER_API_RLIB) --extern imagineos_rt=$(USER_RUNTIME_RLIB) \
+	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
+	-C panic=abort -C relocation-model=static \
+	-C link-arg=-T$(ROOT)/userland/linker.ld \
+	$(ROOT)/userland/programs/liminalClient/main.rs -o $@
+
+LIMINAL_PROGRAMS := $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/user/bin/liminal-client
 
 # Clientes externos do protocolo de superfícies (EDE): um ELF por arquivo em
 # userland/apps/ede/*.rs, instalados em /bin. A regra genérica de /bin (abaixo)

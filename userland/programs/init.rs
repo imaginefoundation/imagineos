@@ -94,22 +94,32 @@ fn run_supervisor() -> ! {
             }
         }
     }
-    // O display server é opcional: crie/remova /etc/display.on no RAMFS para
-    // habilitar/desabilitar o boot gráfico durante bring-up. Quando termina (q
-    // ou crash), o init volta ao getty de texto.
+    // A stack Liminal é opcional: crie/remova /etc/display.on no RAMFS para
+    // habilitar/desabilitar o boot gráfico durante bring-up. O init sobe os
+    // dois lados da stack em paralelo: liminal-server (display server, dono
+    // do framebuffer) e liminal-client (window manager/compositor). Quando o
+    // servidor termina (q ou crash), o init volta ao getty de texto.
     if imagineos::fs::is_file("/etc/display.on").unwrap_or(false) {
-        let _ = imagineos::console::write_all(b"init: starting display server\n");
-        if let Ok(pid) = imagineos::process::exec("/bin/display", &["/bin/display"], &[]) {
-            // O painel EDE é um cliente separado do WM (protocolo de
-            // superfícies); começa junto, em paralelo com o display server.
+        let _ = imagineos::console::write_all(b"init: starting liminal stack\n");
+        if let Ok(server_pid) =
+            imagineos::process::exec("/bin/liminal-server", &["/bin/liminal-server"], &[])
+        {
+            // O WM é um cliente comum do protocolo de superfícies: cria o
+            // desktop e as janelas, posiciona cada uma com surface_move.
+            let _ = imagineos::process::spawn(
+                "/bin/liminal-client",
+                &["/bin/liminal-client"],
+                &[],
+                imagineos::abi::SpawnIo::default(),
+            );
             let _ = imagineos::process::spawn(
                 "/bin/ede-panel",
                 &["/bin/ede-panel"],
                 &[],
                 imagineos::abi::SpawnIo::default(),
             );
-            let _ = imagineos::process::waitpid(pid as i64);
-            let _ = imagineos::console::write_all(b"init: display server exited; returning to getty\n");
+            let _ = imagineos::process::waitpid(server_pid as i64);
+            let _ = imagineos::console::write_all(b"init: liminal stack exited; returning to getty\n");
         }
     }
     let mut getty_pid = 0;

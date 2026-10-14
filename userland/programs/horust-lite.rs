@@ -44,6 +44,7 @@ impl Service {
         exited: false,
     };
 
+    #[allow(dead_code)]
     fn command(&self) -> &str {
         core::str::from_utf8(&self.command[..self.command_length]).unwrap_or("")
     }

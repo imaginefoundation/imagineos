@@ -89,6 +89,18 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	for program in $(notdir $(EDE_PROGRAMS)); do \
 		cp $(BUILD_DIR)/user/bin/$$program $(BUILD_DIR)/ramfs/bin/$$program; \
 	done
+	# Stack Liminal: display server + window manager/compositor.
+	cp $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/ramfs/bin/liminal-server
+	cp $(BUILD_DIR)/user/bin/liminal-client $(BUILD_DIR)/ramfs/bin/liminal-client
+
+	# Temas (.tpf — Theme Package File): empacota o tema clássico num TAR ustar
+	# com `themeConfig.json` (nome, autor, versão, descrição, compositor) e o
+	# CSS `window/windowTheme.css`. O WM olha para system/themes/current.tpf,
+	# com fallback classic.tpf; as fontes do tema ficam em ramfs/system/themes/classic.
+	mkdir -p $(BUILD_DIR)/ramfs/system/themes
+	tar --format=ustar -C $(RAMFS_ROOT)/system/themes/classic \
+		--exclude='*cursor*' -cf $(BUILD_DIR)/ramfs/system/themes/classic.tpf themeConfig.json window
+	cp $(BUILD_DIR)/ramfs/system/themes/classic.tpf $(BUILD_DIR)/ramfs/system/themes/current.tpf
 
 	# Tar para o instalador do SO
 	tar --format=ustar --numeric-owner --owner=0 --group=0 \

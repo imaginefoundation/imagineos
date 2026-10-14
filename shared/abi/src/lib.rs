@@ -93,6 +93,9 @@ pub const SYS_SURFACE_SNAPSHOT: u64 = 58;
 /// `surface_send_event(&SurfaceEvent)`: entrega um evento ao dono da
 /// superfície indicada (o servidor encaminha teclas e cliques).
 pub const SYS_SURFACE_SEND_EVENT: u64 = 59;
+/// `surface_move(id, x, y)`: o dono reposiciona a própria superfície na tela.
+/// O display server compõe no novo endereço a partir do próximo quadro.
+pub const SYS_SURFACE_MOVE: u64 = 61;
 /// `pivot_root(new_root, put_old)`: troca a raiz do sistema (initramfs → raiz
 /// real no disco). POSIX/Linux: o initramfs chama após montar a nova raiz.
 pub const SYS_PIVOT_ROOT: u64 = 60;
@@ -145,6 +148,11 @@ pub struct SurfaceSnapshot {
     pub pitch: u32,
     /// Endereço virtual do buffer no espaço do servidor de display.
     pub address: u64,
+    /// Origem da superfície na tela, definida pelo dono (`surface_move`).
+    pub x: i32,
+    pub y: i32,
+    /// Ordem de empilhamento (maior = à frente).
+    pub z: u32,
 }
 
 #[repr(C)]

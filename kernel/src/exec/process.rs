@@ -12,7 +12,7 @@ pub use imagineos_abi::UserArg;
 
 const MAX_PROCESSES: usize = imagineos_abi::MAX_PROCESSES;
 // The synchronous DFS installer nests large journal transaction buffers.
-const KERNEL_STACK_SIZE: usize = 64 * 1024;
+const KERNEL_STACK_SIZE: usize = 128 * 4096;
 // A full-featured shell keeps parsed commands, expanded words and redirection
 // buffers on the user stack at once. 32 KiB proved too tight (a page fault at
 // the top of the stack while running `echo`). After `fork`, the child inherits
@@ -345,19 +345,20 @@ fn load_elf_at(
             .virtual_address
             .checked_add(segment.memory_size)
             .ok_or(LoadError::InvalidMapping)?;
-        let first_page = segment.virtual_address & !(PAGE_SIZE - 1);
-        let last_page = segment_end
-            .checked_add(PAGE_SIZE - 1)
-            .ok_or(LoadError::InvalidMapping)?
-            & !(PAGE_SIZE - 1);
-        let mut page = first_page;
-        while page < last_page {
-            match address_space.map_user_page(page) {
-                Ok(_) | Err(MapError::AlreadyMapped) => {}
-                Err(_) => return Err(LoadError::OutOfMemory),
+            let first_page = segment.virtual_address & !(PAGE_SIZE - 1);
+            let last_page = segment_end
+                .checked_sub(1)
+                .ok_or(LoadError::InvalidMapping)?
+                & !(PAGE_SIZE - 1);
+
+            let mut page = first_page;
+            while page <= last_page {
+                match address_space.map_user_page(page) {
+                    Ok(_) | Err(MapError::AlreadyMapped) => {}
+                    Err(_) => return Err(LoadError::OutOfMemory),
+                }
+                page += PAGE_SIZE;
             }
-            page += PAGE_SIZE;
-        }
 
         zero_user_range(&address_space, segment.virtual_address, segment.memory_size)?;
         let file_bytes = elf.file_bytes(segment).ok_or(LoadError::InvalidMapping)?;
