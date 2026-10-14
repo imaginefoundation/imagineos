@@ -48,6 +48,8 @@ static KERNEL_LOG: SharedLog = SharedLog(UnsafeCell::new(LogBuffer::new()));
 
 pub fn append(bytes: &[u8]) {
     unsafe { (*KERNEL_LOG.0.get()).append(bytes) };
+    // Espelha na porta serial (debug no QEMU com -serial file).
+    crate::serial_write(bytes);
 }
 
 pub fn read(output: &mut [u8]) -> usize {

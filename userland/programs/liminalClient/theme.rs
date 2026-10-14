@@ -136,22 +136,35 @@ impl Theme {
 
     /// Carrega o tema do disco. Falha degrada para o padrão 3.1 embutido:
     /// o WM nunca deixa de subir por causa de um tema ruim.
+    ///
+    /// Os buffers de trabalho são estáticos, não de stack: a stack de
+    /// 128 KiB do processo não comporta o pacote (256 KiB) + CSS (64 KiB).
     pub fn load() -> Self {
-        let mut package = [0u8; tpf::MAX_PACKAGE_SIZE];
-        let path = if fs::is_file(tpf::THEME_FILE).unwrap_or(false) {
-            tpf::THEME_FILE
-        } else {
-            tpf::DEFAULT_THEME_FILE
-        };
-        let Some(length) = tpf::read_package(path, &mut package) else {
-            return Self::builtin();
-        };
-        let mut config = tpf::ThemeConfig::EMPTY;
-        let mut css = [0u8; tpf::MAX_MEMBER_SIZE];
-        let css_len = tpf::unpack_theme(&package[..length], &mut config, &mut css);
-        let mut window = DEFAULTS;
-        apply_css(&mut window, &css[..css_len]);
-        Self {
+        load_theme_static()
+    }
+}
+
+static mut THEME_PACKAGE: [u8; tpf::MAX_PACKAGE_SIZE] = [0; tpf::MAX_PACKAGE_SIZE];
+static mut THEME_CSS: [u8; tpf::MAX_MEMBER_SIZE] = [0; tpf::MAX_MEMBER_SIZE];
+
+/// Corpo de `Theme::load` fora do método (buffers estáticos).
+fn load_theme_static() -> Theme {
+    // Single-threaded: o WM carrega o tema uma única vez, no boot.
+    let package = unsafe { &mut *core::ptr::addr_of_mut!(THEME_PACKAGE) };
+    let css = unsafe { &mut *core::ptr::addr_of_mut!(THEME_CSS) };
+    let path = if fs::is_file(tpf::THEME_FILE).unwrap_or(false) {
+        tpf::THEME_FILE
+    } else {
+        tpf::DEFAULT_THEME_FILE
+    };
+    let Some(length) = tpf::read_package(path, package) else {
+        return Theme::builtin();
+    };
+    let mut config = tpf::ThemeConfig::EMPTY;
+    let css_len = tpf::unpack_theme(&package[..length], &mut config, css);
+    let mut window = DEFAULTS;
+    apply_css(&mut window, &css[..css_len]);
+    Theme {
             window,
             name: config.name,
             name_len: config.name_len,
@@ -159,7 +172,6 @@ impl Theme {
             author_len: config.author_len,
             version: config.version,
             version_len: config.version_len,
-        }
     }
 }
 

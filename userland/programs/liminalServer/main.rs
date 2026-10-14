@@ -170,9 +170,14 @@ impl DisplayServer {
         let backbuffer = core::ptr::addr_of_mut!(BACKBUFFER).cast::<u32>();
 
         // Fundo: preto sólido (o WM cobre o desktop com a superfície dele).
-        for row in 0..height as usize {
+        // A área útil é o menor dos dois: o backbuffer estático tem teto
+        // fixo, e o modo real do firmware (OVMF costuma dar 1024x768) pode
+        // ser maior — compondo além do array seria um page fault.
+        let usable_width = width.min(BACKBUFFER_MAX_WIDTH as i32) as usize;
+        let usable_height = height.min(BACKBUFFER_MAX_HEIGHT as i32) as usize;
+        for row in 0..usable_height {
             let line = row * pitch;
-            for column in 0..width as usize {
+            for column in 0..usable_width {
                 unsafe { backbuffer.add(line + column).write(0) };
             }
         }
@@ -199,6 +204,11 @@ impl DisplayServer {
             };
             let columns = (entry.width.min(width).max(0)) as usize;
             let rows = (entry.height.min(height).max(0)) as usize;
+            // Clamps de segurança: nada pode sair do backbuffer.
+            let origin_x = entry.x.max(0) as usize;
+            let origin_y = entry.y.max(0) as usize;
+            let columns = columns.min(BACKBUFFER_MAX_WIDTH.saturating_sub(origin_x));
+            let rows = rows.min(BACKBUFFER_MAX_HEIGHT.saturating_sub(origin_y));
             for row in 0..rows {
                 let source = row * entry.pitch as usize;
                 let destination =
@@ -212,9 +222,10 @@ impl DisplayServer {
         self.draw_cursor();
         // Presenta o quadro inteiro. O custo de recomposição fica no WM, que
         // é quem redesenha com menos frequência.
-        for row in 0..height as usize {
-            let line =
-                unsafe { core::slice::from_raw_parts(backbuffer.add(row * pitch), width as usize) };
+        for row in 0..usable_height {
+            let line = unsafe {
+                core::slice::from_raw_parts(backbuffer.add(row * pitch), usable_width)
+            };
             self.framebuffer.copy_row(line, 0, row);
         }
         self.cursor_present = true;
@@ -299,10 +310,12 @@ impl DisplayServer {
     }
 
     fn pixel(&self, x: i32, y: i32, rgb: u32) {
+        // Tela E backbuffer: vale o menor dos dois (o array estático tem
+        // teto fixo, o modo real do firmware pode ser maior).
         if x < 0
             || y < 0
-            || x >= self.framebuffer.width() as i32
-            || y >= self.framebuffer.height() as i32
+            || x >= (self.framebuffer.width() as i32).min(BACKBUFFER_MAX_WIDTH as i32)
+            || y >= (self.framebuffer.height() as i32).min(BACKBUFFER_MAX_HEIGHT as i32)
         {
             return;
         }

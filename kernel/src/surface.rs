@@ -164,6 +164,7 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
     // Mapeia no espaço do chamador, em fatia fixa por id.
     let client_address =
         imagineos_abi::SURFACE_REGION_BASE + (slot as u64) * imagineos_abi::SURFACE_REGION_STRIDE;
+    let _ = crate::kernel_log::append(b"surface: create enter\n");
     let mapped = crate::process::with_current_space(|space| {
         space.map_framebuffer_range(
             client_address,
@@ -175,6 +176,15 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
         let _ = crate::kernel_log::append(b"surface: map failed\n");
         return Err(ENOSPC);
     }
+    // Debug: a página 2 da região está presente para o cliente?
+    let page2_ok = crate::process::with_current_space(|space| {
+        space.translate(client_address + 0x2000).is_some()
+    });
+    let _ = crate::kernel_log::append(if page2_ok {
+        b"surface: page2 present\n"
+    } else {
+        b"surface: page2 MISSING\n"
+    });
     surfaces.slots[slot] = Surface {
         pid,
         width: info.width as i32,
