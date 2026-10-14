@@ -30,6 +30,12 @@ DISTRIBUTION   := imagineos
 TARGET         := x86_64-unknown-none
 KERNEL_FEATURES ?=
 
+# Interruptor dos utilitários third_party (TinyCC upstream etc.). Com
+# THIRD_PARTY=0 eles ficam fora do build e da ISO; o Limine continua
+# obrigatório (build/third_party.mk). Defina na linha de comando:
+#   make iso THIRD_PARTY=0
+THIRD_PARTY    ?= 1
+
 # ==============================================================================
 # FERRAMENTAS
 # ==============================================================================

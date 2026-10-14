@@ -5,15 +5,18 @@
 # Compila os programas de userspace para o alvo x86_64-unknown-none:
 #   * apps principais: init, getty, shell      -> .build/user/{sbin,bin}
 #   * utilitários Rust: ls, cat, ...           -> .build/user/utilities
-#   * utilitários C: hello_c, tcc              -> .build/user/utilities
+#   * utilitários C: hello_c                   -> .build/user/utilities
 #   * libc estática (libdreamcore.a), objetos crt e runtime C.
 #
+# O código third_party (TinyCC upstream, runtime nativo do TCC) vive em
+# build/third_party.mk, com o interruptor THIRD_PARTY em common.mk.
+#
 # Uso isolado:  make -f build/userland.mk
-# Alvos:        user-programs, user-libs, tcc-source, c-app
+# Alvos:        user-programs, user-libs, c-app
 
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
-.PHONY: user-programs user-libs tcc-source c-app
+.PHONY: user-programs user-libs c-app
 
 user-programs: $(USER_PROGRAMS) $(EDE_PROGRAMS) $(LIMINAL_PROGRAMS)
 
@@ -196,52 +199,6 @@ $(BUILD_DIR)/user/c/%.elf: $(ROOT)/ramfs/home/%.c $(ROOT)/userland/libc/include/
 		-Wl,--build-id=none $(BUILD_DIR)/user/c/$*.o $(USER_CRT_OBJECTS) -o $@
 
 # ------------------------------------------------------------------------------
-# TinyCC (host e versão nativa do ImagineOS)
+# TinyCC (host e versão nativa do ImagineOS) mudou para build/third_party.mk;
+# controlado por THIRD_PARTY (veja build/common.mk).
 # ------------------------------------------------------------------------------
-
-$(TCC_SOURCE)/configure:
-	@echo "TinyCC source is missing. Run 'make tcc-source' to fetch the pinned upstream revision."
-	@false
-
-tcc-source:
-	@if [ ! -x "$(TCC_SOURCE)/configure" ]; then \
-		git clone https://github.com/TinyCC/tinycc.git "$(TCC_SOURCE)" && \
-		git -C "$(TCC_SOURCE)" checkout --detach "$(TCC_SOURCE_REV)"; \
-	fi
-
-$(TCC_CONFIG_STAMP): $(TCC_SOURCE)/configure $(ROOT)/Makefile
-	@mkdir -p $(BUILD_DIR)/toolchain
-	cd $(TCC_SOURCE) && ./configure --prefix=/usr --tccdir=/usr/lib/tcc \
-		--sysincludepaths=/usr/include:/usr/include/x86_64-linux-gnu:$(shell $(CC) -print-file-name=include) \
-		--libpaths=/usr/lib:/usr/lib/x86_64-linux-gnu \
-		--crtprefix=/usr/lib/x86_64-linux-gnu:/usr/lib \
-		--config-bcheck=no --config-backtrace=no
-	touch $@
-
-$(TCC_PATCH_STAMP): $(ROOT)/userland/patches/tinycc-imagineos.patch $(TCC_SOURCE)/tccrun.c $(TCC_CONFIG_STAMP)
-	@if ! grep -Fq 'TCCSYM(gettimeofday)' $(TCC_SOURCE)/tccrun.c; then \
-		patch --forward -p1 -d $(TCC_SOURCE) < $<; \
-	fi
-	touch $@
-
-$(TCC_HOST): $(TCC_CONFIG_STAMP) $(TCC_PATCH_STAMP) $(TCC_SOURCE)/Makefile $(TCC_SOURCE)/tcc.c
-	@mkdir -p $(BUILD_DIR)/toolchain
-	$(MAKE) -C $(TCC_SOURCE)
-	cp $(TCC_SOURCE)/tcc $@
-
-$(TCC_SOURCE)/libtcc1.a: $(TCC_HOST)
-	@test -f $@
-
-$(TCC_SOURCE)/runmain.o: $(TCC_HOST)
-	@test -f $@
-
-$(BUILD_DIR)/user/tcc/%.o: $(TCC_SOURCE)/%.c $(TCC_HOST) $(TCC_PATCH_STAMP) \
-                            $(wildcard $(ROOT)/userland/libc/include/*.h $(ROOT)/userland/libc/include/sys/*.h)
-	@mkdir -p $(dir $@)
-	$(CC) $(TCC_NATIVE_CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/user/utilities/tcc: $(TCC_NATIVE_OBJECTS) $(USER_CRT_OBJECTS) $(ROOT)/userland/linker.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) -nostdlib -static -no-pie \
-		-Wl,-T,$(ROOT)/userland/linker.ld -Wl,--build-id=none \
-		$(TCC_NATIVE_OBJECTS) $(USER_CRT_OBJECTS) -o $@

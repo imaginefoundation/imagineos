@@ -22,8 +22,9 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 # As peças que entram no tar vêm de outros makefiles. Em vez de duplicar suas
 # regras aqui, pedimos que o make os construa recursivamente: kernel.mk produz
 # bootstrap/dzImage e userland.mk produz os programas e as libs de userspace.
-KERNEL_MK   := $(ROOT)/build/kernel.mk
-USERLAND_MK := $(ROOT)/build/userland.mk
+KERNEL_MK      := $(ROOT)/build/kernel.mk
+USERLAND_MK    := $(ROOT)/build/userland.mk
+THIRD_PARTY_MK := $(ROOT)/build/third_party.mk
 
 # Todo arquivo da árvore `ramfs/` é dependência do tar. Sem isto, editar um
 # arquivo de `ramfs/` (um script em `etc/`, uma fonte) não disparava a
@@ -39,8 +40,8 @@ ramfs:
 ramfs-inputs: ramfs
 	$(MAKE) -f $(KERNEL_MK) bootstrap dzimage
 	$(MAKE) -f $(USERLAND_MK) user-programs user-libs \
-		$(BUILD_DIR)/user/utilities/hello_c $(BUILD_DIR)/user/utilities/tcc \
-		$(TCC_SOURCE)/libtcc1.a $(TCC_SOURCE)/runmain.o
+		$(BUILD_DIR)/user/utilities/hello_c
+	$(MAKE) -f $(THIRD_PARTY_MK) third-party
 
 ramfs-image: ramfs-inputs
 	$(MAKE) -f $(RAMFS_MK) $(RAMFS_IMAGE)
@@ -71,9 +72,11 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crti.o
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crtn.o
 	cp $(ROOT)/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
+ifeq ($(THIRD_PARTY),1)
+	# Runtime do TCC nativo (vindo de build/third_party.mk).
 	cp $(TCC_SOURCE)/libtcc1.a $(BUILD_DIR)/ramfs/usr/lib/tcc/libtcc1.a
 	cp $(TCC_SOURCE)/runmain.o $(BUILD_DIR)/ramfs/usr/lib/tcc/runmain.o
-
+endif
 	# Binários userland
 	cp $(BUILD_DIR)/user/sbin/init $(BUILD_DIR)/ramfs/sbin/init
 	cp $(BUILD_DIR)/user/sbin/getty $(BUILD_DIR)/ramfs/sbin/getty
@@ -84,6 +87,10 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	for utility in $(USER_C_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
 	done
+ifeq ($(THIRD_PARTY),1)
+	# TCC nativo do ImagineOS (compilado em build/third_party.mk)
+	cp $(BUILD_DIR)/user/utilities/tcc $(BUILD_DIR)/ramfs/bin/tcc
+endif
 	# Clientes EDE (protocolo de superfícies). O binário sai como
 	# .build/user/bin/ede-<nome>, copiado para /bin/ede-<nome>.
 	for program in $(notdir $(EDE_PROGRAMS)); do \
