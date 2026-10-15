@@ -17,8 +17,9 @@ a cada um deles. Cada arquivo também roda isolado:
 | Makefile | Responsabilidade | Alvos |
 | --- | --- | --- |
 | `build/common.mk` | variáveis, ferramentas e artefatos compartilhados | (incluído, sem alvos) |
-| `build/kernel.mk` | kernel `dreamcore` e `dzImage` | `kernel`, `dzimage`, `tools` |
-| `build/userland.mk` | apps, utilitários, libc, runtime C e TinyCC | `user-programs`, `user-libs`, `tcc-source`, `c-app` |
+| `build/kernel.mk` | kernel `dreamcore` e `dzImage` | `kernel`, `dzimage` |
+| `build/tools.mk` | ferramentas do host (`dfs-image`) | `tools` |
+| `build/userland.mk` | apps, utilitários, libc e runtime C | `user-programs`, `user-libs`, `c-app` |
 | `build/ramfs.mk` | árvore `ramfs/` e empacotamento do USTAR | `ramfs`, `ramfs-image` |
 | `build/iso.mk` | ISO UEFI e execução no QEMU | `iso`, `run`, `disk-image`, `run-disk`, `run-installer` |
 
@@ -29,6 +30,7 @@ rodar uma etapa sozinha, use o arquivo direto:
 
 ```sh
 make -f build/kernel.mk dzimage
+make -f build/tools.mk tools
 make -f build/userland.mk user-programs
 make -f build/ramfs.mk ramfs-image
 make -f build/iso.mk iso
@@ -53,7 +55,7 @@ bootstrap de segunda fase nem empacotador: o Limine reconhece o dzImage como um
 ELF, carrega seus segmentos na RAM e salta direto para o `_start` do kernel,
 que coleta as respostas do protocolo Limine e monta o `BootInfo`. O USTAR
 `ramfs.tar` é produzido a partir de `ramfs/`; os programas Rust de
-`userland/apps/` e `userland/utilities/` são incluídos sem
+`common/programs/` e `common/utilities/` são incluídos sem
 extensão: `/sbin/init`, `/sbin/getty` e comandos em `/bin`. A fonte PSF
 8x16 `tools/assets/zap-vga16.psf` é incorporada ao kernel como
 fallback para uma fonte inválida ou ausente no RAMFS. Ela também é copiada
@@ -61,24 +63,19 @@ para `system/fonts/zap-vga16.psf` dentro do USTAR, de modo que o instalador
 inclui a fonte na raiz DFS persistente.
 
 Apps C em `ramfs/home/<nome>.c` implementam `main`; `make c-app APP=<nome>` os
-compila pelo TCC upstream no host e linka como ELF estatico para o Dreamcore
-(pela raiz ou direto, `make -f build/userland.mk c-app APP=<nome>`). A
-libc fornece o entrypoint `_start` por `crt0.c`. A interface inicial em
-`userland/libc/` inclui `read`, `write`, `_exit`, `printf`, `puts`, entrada e
+compila com a libc do ImagineOS e linka como ELF estatico para o Dreamcore
+(pela raiz ou direto, `make -f build/userland.mk c-app APP=<nome>`). O runtime C
+(fornecido pela crate `ImagineCRuntime`) expõe o entrypoint `_start`. A interface inicial em
+`userland/libraries/libc/` inclui `read`, `write`, `_exit`, `printf`, `puts`, entrada e
 saida de caracteres, operacoes basicas de `<string.h>` e `<stdlib.h>`, e as
 extensoes Dreamcore para ler/gravar arquivos inteiros. O formatador cobre
 `%s`, `%c`, inteiros decimais/hexadecimais e `%%`; o allocator e um bump arena
 de 64 KiB por processo e `free` ainda nao recupera memoria. I/O de arquivo esta
 limitado a 4096 bytes por chamada; a area mutavel total da ramfs e 1 MiB.
 
-Este ainda nao e um port de runtime do TCC nem da musl. O TCC roda no host para
-produzir o ELF, e `third_party/musl-1.2.6` e apenas fonte de referencia: o build
-nativo dela usa syscalls Linux e nao e linkado aos apps Dreamcore. TCC e musl sao
-compativeis entre si em Linux, mas o ImagineOS precisa de mais syscalls POSIX,
-descritores de arquivo, memoria dinamica e startup antes de executar esses
-projetos upstream dentro da ramfs. As fontes ignoradas do TCC podem ser
-recuperadas com `make tcc-source`, que faz o checkout da revisao fixada em
-`TCC_SOURCE_REV`; `third_party/` fica fora do controle de versao.
+Este ainda nao e um port de runtime de um compilador C nem da musl. O ImagineOS
+precisa de mais syscalls POSIX, descritores de arquivo, memoria dinamica e
+startup antes de executar esses projetos upstream dentro da ramfs.
 
 ## Executar com QEMU
 

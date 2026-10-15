@@ -20,6 +20,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 # outras etapas (que o make resolve recursivamente) em vez de tentar recriar
 # as regras de arquivo que vivem em kernel.mk/ramfs.mk.
 KERNEL_MK := $(ROOT)/build/kernel.mk
+TOOLS_MK  := $(ROOT)/build/tools.mk
 RAMFS_MK  := $(ROOT)/build/ramfs.mk
 
 # Nomes FHS instalados na ISO e no disco instalado.
@@ -53,7 +54,12 @@ iso: image-payloads
 	cp $(RAMFS_IMAGE) $(ISO_DIR)/boot/$(INITRAMFS_NAME)
 	cp $(ROOT)/boot/limine.conf $(ISO_DIR)/limine.conf
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI
-	dd if=/dev/zero of=$(ISO_DIR)/efi.img bs=1M count=64
+	@# Dimensiona a imagem FAT do ESP com folga para os payloads de boot
+	@# (BOOTX64.EFI + dzImage + initramfs), em vez de um tamanho fixo.
+	@payload_bytes=$$( cat $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(ISO_DIR)/boot/$(DZIMAGE_NAME) $(ISO_DIR)/boot/$(INITRAMFS_NAME) 2>/dev/null | wc -c ); \
+		blocks=$$(( (payload_bytes + 1024*1024 - 1) / (1024*1024) + 16 )); \
+		echo "Tamanho da imagem EFI: $${blocks} MiB (payload: $${payload_bytes} bytes)"; \
+		dd if=/dev/zero of=$(ISO_DIR)/efi.img bs=1M count=$${blocks}
 	mkfs.vfat $(ISO_DIR)/efi.img
 	mmd -i $(ISO_DIR)/efi.img ::/EFI ::/EFI/BOOT ::/boot
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
@@ -76,7 +82,7 @@ run: iso
 		-cdrom $(ISO_IMAGE)
 
 disk-image: iso
-	$(MAKE) -f $(KERNEL_MK) $(DFS_IMAGE_BIN)
+	$(MAKE) -f $(TOOLS_MK) tools
 	@if [ -e "$(DISK_IMAGE)" ]; then \
 		printf 'Usando imagem de disco existente: %s\n' "$(DISK_IMAGE)"; \
 	else \
