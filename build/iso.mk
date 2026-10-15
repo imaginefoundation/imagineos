@@ -4,9 +4,8 @@
 #
 # Monta a ISO UEFI com a organização de um live CD Linux:
 #
-#   /boot/dzImage        kernel compactado (Dreamcore Zipped Image)
+#   /boot/dzImage        kernel ELF (Dreamcore), carregado direto pelo Limine
 #   /boot/initramfs.img  raiz volátil de boot (USTAR sobre RAMFS)
-#   /boot/bootstrap.elf  segunda fase do bootloader
 #   /EFI/BOOT/BOOTX64.EFI  Limine (bootloader EFI, registro El Torito)
 #
 # O xorriso produz ISO 9660 com Rock Ridge (-R), Joliet (-J) e El Torito
@@ -26,15 +25,14 @@ RAMFS_MK  := $(ROOT)/build/ramfs.mk
 # Nomes FHS instalados na ISO e no disco instalado.
 DZIMAGE_NAME     := dzImage
 INITRAMFS_NAME  := initramfs.img
-BOOTLOADER_NAME := bootstrap.elf
 
 .PHONY: iso run disk-image run-disk installer-disk run-installer \
         image-payloads
 
-# Payloads que a ISO consome: bootstrap + dzImage (kernel.mk) e ramfs.tar
+# Payloads que a ISO consome: dzImage (kernel.mk) e ramfs.tar
 # (ramfs.mk). O ramfs, por sua vez, já puxa o kernel e o userland.
 image-payloads:
-	$(MAKE) -f $(KERNEL_MK) bootstrap dzimage
+	$(MAKE) -f $(KERNEL_MK) dzimage
 	$(MAKE) -f $(RAMFS_MK) ramfs-image
 
 # ------------------------------------------------------------------------------
@@ -43,7 +41,6 @@ image-payloads:
 
 iso: image-payloads
 	@# Confirma que os artefatos existem antes de montar a ISO.
-	@test -f $(BOOTSTRAP) || (echo "bootstrap.elf ausente"; exit 1)
 	@test -f $(DZ_IMAGE) || (echo "dzImage ausente"; exit 1)
 	@test -f $(RAMFS_IMAGE) || (echo "ramfs.tar ausente"; exit 1)
 	@command -v xorriso >/dev/null || (echo "xorriso não encontrado"; exit 1)
@@ -52,7 +49,6 @@ iso: image-payloads
 	@command -v mmd >/dev/null || (echo "mmd não encontrado"; exit 1)
 	rm -rf $(ISO_DIR)
 	mkdir -p $(ISO_DIR)/EFI/BOOT $(ISO_DIR)/boot $(DISTRO_DIR)
-	cp $(BOOTSTRAP) $(ISO_DIR)/boot/$(BOOTLOADER_NAME)
 	cp $(DZ_IMAGE) $(ISO_DIR)/boot/$(DZIMAGE_NAME)
 	cp $(RAMFS_IMAGE) $(ISO_DIR)/boot/$(INITRAMFS_NAME)
 	cp $(ROOT)/boot/limine.conf $(ISO_DIR)/limine.conf
@@ -62,7 +58,6 @@ iso: image-payloads
 	mmd -i $(ISO_DIR)/efi.img ::/EFI ::/EFI/BOOT ::/boot
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/limine.conf ::/limine.conf
-	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(BOOTLOADER_NAME) ::/boot/$(BOOTLOADER_NAME)
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(DZIMAGE_NAME) ::/boot/$(DZIMAGE_NAME)
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(INITRAMFS_NAME) ::/boot/$(INITRAMFS_NAME)
 	xorriso -as mkisofs -R -r -J -V DREAMCORE \
@@ -86,7 +81,7 @@ disk-image: iso
 		printf 'Usando imagem de disco existente: %s\n' "$(DISK_IMAGE)"; \
 	else \
 		sh $(ROOT)/tools/install-disk.sh "$(DISK_IMAGE)" \
-			"$(ISO_DIR)/boot/$(BOOTLOADER_NAME)" "$(ISO_DIR)/boot/$(DZIMAGE_NAME)" \
+			"$(ISO_DIR)/boot/$(DZIMAGE_NAME)" \
 			"$(RAMFS_INST_IMG)" \
 			"$(ISO_DIR)/EFI/BOOT/BOOTX64.EFI" "$(ISO_DIR)/limine.conf" \
 			"$(ROOT)/boot/startup.nsh" "$(DFS_IMAGE_BIN)"; \

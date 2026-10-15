@@ -113,7 +113,6 @@ fn installs_a_gpt_esp_and_boot_payload() {
     let ramfs = minimal_ustar();
     installer::install(
         &disk,
-        b"bootstrap image",
         b"compressed kernel",
         &ramfs,
         b"efi loader",
@@ -171,11 +170,9 @@ fn installs_a_gpt_esp_and_boot_payload() {
     disk.read_sector(data_start + 2 * 8, &mut boot_directory)
         .unwrap();
     assert_eq!(boot_directory[64 + 11], 0x0f);
-    assert_eq!(&boot_directory[96..107], b"BOOT    ELF");
+    assert_eq!(&boot_directory[96..107], b"DZIMAGE    ");
     assert_eq!(boot_directory[128 + 11], 0x0f);
-    assert_eq!(&boot_directory[160..171], b"DZIMAGE    ");
-    assert_eq!(boot_directory[192 + 11], 0x0f);
-    assert_eq!(&boot_directory[224..235], b"INITRAM IMG");
+    assert_eq!(&boot_directory[160..171], b"INITRAM IMG");
 
     let mut protective_mbr = [0; SECTOR_SIZE];
     disk.read_sector(0, &mut protective_mbr).unwrap();
@@ -203,7 +200,7 @@ fn minimal_ustar() -> Vec<u8> {
 #[test]
 fn refuses_a_disk_too_small_before_writing() {
     let disk = SparseDisk::new(100_000);
-    let result = installer::install(&disk, b"b", b"d", b"r", b"e", b"c", b"s");
+    let result = installer::install(&disk, b"d", b"r", b"e", b"c", b"s");
     assert_eq!(result, Err(installer::InstallError::DiskTooSmall));
     assert!(disk.contents.borrow().is_empty());
 }

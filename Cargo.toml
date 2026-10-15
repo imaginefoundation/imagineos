@@ -16,15 +16,8 @@ name = "dreamcore"
 path = "kernel/src/main.rs"
 test = false
 
-[[bin]]
-name = "bootstrap"
-path = "bootstrap/bootstrap.rs"
-test = false
-bench = false
-
 [features]
 kernel-debug = []
-bootstrap = []
 
 [profile.dev]
 panic = "abort"

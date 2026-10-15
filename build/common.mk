@@ -55,7 +55,6 @@ BUILD_DIR      := $(ROOT)/.build
 DISTRO_DIR     := $(BUILD_DIR)/distro
 
 KERNEL         := $(ROOT)/target/$(TARGET)/release/dreamcore
-BOOTSTRAP      := $(BUILD_DIR)/bootstrap.elf
 DZ_IMAGE       := $(BUILD_DIR)/dzImage
 RAMFS_IMAGE    := $(BUILD_DIR)/initramfs.tar
 RAMFS_INST_IMG := $(BUILD_DIR)/initramfs-installed.tar
@@ -64,8 +63,6 @@ ISO_IMAGE      := $(DISTRO_DIR)/$(K_NAME)-$(shell date +%Y-%m-%d-%H-%M)-$(CODENA
 DISK_IMAGE     ?= $(BUILD_DIR)/imagineos-disk.img
 INSTALL_TARGET := $(BUILD_DIR)/installer-target.img
 
-# Ferramentas auxiliares compiladas no host
-DZPACK_BIN     := $(BUILD_DIR)/dzpack
 DFS_IMAGE_BIN  := $(BUILD_DIR)/dfs-image
 TCC_HOST       := $(BUILD_DIR)/toolchain/tcc
 

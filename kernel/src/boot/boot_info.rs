@@ -41,8 +41,8 @@ impl BootInfo {
     }
     #[allow(dead_code)]
     pub unsafe fn reserved(&self) -> &[PhysicalRange] {
-        // SAFETY: `reserved_ranges`/`reserved_count` são preenchidos
-        // exclusivamente pelo bootstrap no boot.
+        // SAFETY: `reserved_ranges`/`reserved_count` valem `0`/nulo quando o
+        // Limine carrega o kernel diretamente (nenhum intervalo extra reservado).
         unsafe { core::slice::from_raw_parts(self.reserved_ranges, self.reserved_count) }
     }
 }

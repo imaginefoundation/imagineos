@@ -2,9 +2,7 @@
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(feature = "bootstrap")]
 const PIT_RELOAD: u64 = u16::MAX as u64;
-#[cfg(feature = "bootstrap")]
 const POLL_LIMIT: usize = 100_000_000;
 // Frequency of the PIT input clock, also used to program the periodic
 // scheduling tick in the kernel (see `configure_timer_interrupt`).
@@ -23,14 +21,6 @@ pub const TIMER_QUANTUM_TICKS: u64 = 10;
 static START_TSC: AtomicU64 = AtomicU64::new(0);
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(feature = "bootstrap")]
-pub fn init() -> (u64, u64) {
-    let start = read_tsc();
-    let frequency = calibrate_tsc().or_else(cpuid_tsc_frequency).unwrap_or(0);
-    init_with(start, frequency);
-    (start, frequency)
-}
 
 pub fn init_with(start: u64, frequency: u64) {
     START_TSC.store(start, Ordering::Relaxed);
@@ -124,7 +114,6 @@ pub fn elapsed_microseconds() -> Option<u64> {
     )
 }
 
-#[cfg(any(feature = "bootstrap", not(feature = "bootstrap")))]
 pub fn format_elapsed(output: &mut [u8; 32]) -> &[u8] {
     let frequency = TSC_FREQUENCY.load(Ordering::Relaxed);
     if frequency == 0 {
@@ -136,7 +125,6 @@ pub fn format_elapsed(output: &mut [u8; 32]) -> &[u8] {
     format_milliseconds(milliseconds, output)
 }
 
-#[cfg(any(feature = "bootstrap", not(feature = "bootstrap")))]
 fn format_milliseconds(milliseconds: u64, output: &mut [u8; 32]) -> &[u8] {
     let seconds = milliseconds / 1000;
     let mut cursor = 0;
@@ -151,8 +139,7 @@ fn format_milliseconds(milliseconds: u64, output: &mut [u8; 32]) -> &[u8] {
     &output[..cursor + 2]
 }
 
-#[cfg(feature = "bootstrap")]
-fn calibrate_tsc() -> Option<u64> {
+pub fn calibrate_tsc() -> Option<u64> {
     let previous_control = unsafe { in_byte(0x61) };
     unsafe {
         out_byte(0x61, previous_control & !0x03);
@@ -184,8 +171,7 @@ fn calibrate_tsc() -> Option<u64> {
     Some((end - start) * PIT_INPUT_FREQUENCY / PIT_RELOAD)
 }
 
-#[cfg(feature = "bootstrap")]
-fn cpuid_tsc_frequency() -> Option<u64> {
+pub fn cpuid_tsc_frequency() -> Option<u64> {
     let maximum_leaf = core::arch::x86_64::__cpuid(0).eax;
     if maximum_leaf >= 0x15 {
         let leaf = core::arch::x86_64::__cpuid_count(0x15, 0);
@@ -202,7 +188,7 @@ fn cpuid_tsc_frequency() -> Option<u64> {
     None
 }
 
-fn read_tsc() -> u64 {
+pub(crate) fn read_tsc() -> u64 {
     let low: u32;
     let high: u32;
     // SAFETY: `rdtsc` é inofensivo (leitura de contador do processador).
@@ -217,7 +203,6 @@ fn read_tsc() -> u64 {
     ((high as u64) << 32) | low as u64
 }
 
-#[cfg(any(feature = "bootstrap", not(feature = "bootstrap")))]
 fn write_decimal(output: &mut [u8], mut value: u64, minimum_digits: usize) -> usize {
     let mut digits = [0u8; 20];
     let mut start = digits.len();
