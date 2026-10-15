@@ -64,8 +64,6 @@ pub fn install_primary_master(
     if device.sector_count() == 0 {
         return Err(InstallError::NoDisk);
     }
-    let bootstrap =
-        ramfs::read("/system/install/bootstrap.elf").ok_or(InstallError::MissingPayload)?;
     let dz_image = ramfs::read("/system/install/dzImage").ok_or(InstallError::MissingPayload)?;
     let efi = ramfs::read("/system/install/BOOTX64.EFI").ok_or(InstallError::MissingPayload)?;
     let config = ramfs::read("/system/install/limine.conf").ok_or(InstallError::MissingPayload)?;
@@ -74,7 +72,6 @@ pub fn install_primary_master(
         ramfs::read("/system/install/initramfs-installed.tar").ok_or(InstallError::MissingPayload)?;
     install_configured(
         &device,
-        bootstrap,
         dz_image,
         ramfs_image,
         efi,
@@ -86,7 +83,6 @@ pub fn install_primary_master(
 
 pub fn install(
     device: &impl BlockDevice,
-    bootstrap: &[u8],
     dz_image: &[u8],
     ramfs_image: &[u8],
     efi: &[u8],
@@ -95,7 +91,6 @@ pub fn install(
 ) -> Result<(), InstallError> {
     install_configured(
         device,
-        bootstrap,
         dz_image,
         ramfs_image,
         efi,
@@ -107,7 +102,6 @@ pub fn install(
 
 fn install_configured(
     device: &impl BlockDevice,
-    bootstrap: &[u8],
     dz_image: &[u8],
     ramfs_image: &[u8],
     efi: &[u8],
@@ -128,8 +122,7 @@ fn install_configured(
     if device.sector_count() < MIN_DISK_SECTORS {
         return Err(InstallError::DiskTooSmall);
     }
-    if bootstrap.is_empty()
-        || dz_image.is_empty()
+    if dz_image.is_empty()
         || efi.is_empty()
         || config.is_empty()
         || startup.is_empty()
@@ -150,13 +143,6 @@ fn install_configured(
             name: *b"BOOTX64 EFI",
             long_name: "BOOTX64.EFI",
             contents: efi,
-            first_cluster: 0,
-            cluster_count: 0,
-        },
-        FileToInstall {
-            name: *b"BOOT    ELF",
-            long_name: "bootstrap.elf",
-            contents: bootstrap,
             first_cluster: 0,
             cluster_count: 0,
         },
@@ -461,7 +447,7 @@ fn format_fat16(
         root_start,
         ESP_ROOT_SECTORS as usize,
         &[efi_dir, boot_dir],
-        &[&files[0], &files[5]],
+        &[&files[0], &files[4]],
     )?;
 
     let efi_cluster_lba = data_start;
@@ -735,13 +721,6 @@ mod tests {
                 name: *b"BOOTX64 EFI",
                 long_name: "BOOTX64.EFI",
                 contents: b"efi",
-                first_cluster: 0,
-                cluster_count: 0,
-            },
-            FileToInstall {
-                name: *b"BOOT    ELF",
-                long_name: "bootstrap.elf",
-                contents: b"bootstrap",
                 first_cluster: 0,
                 cluster_count: 0,
             },

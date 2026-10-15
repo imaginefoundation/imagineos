@@ -1,5 +1,4 @@
-ENTRY(kernel_entry)
-
+ENTRY(_start)
 KERNEL_VMA = 0xffffffff80000000;
 KERNEL_LMA = 0x100000;
 

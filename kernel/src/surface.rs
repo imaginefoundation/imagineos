@@ -38,8 +38,11 @@ struct Surface {
     shown: bool,
     /// Ordem de empilhamento (maior = à frente), incrementado a cada foco.
     z: u32,
+    /// Origem na tela, definida pelo dono (`surface_move`). O painel do EDE
+    /// fica em (0, 0); o WM posiciona as janelas dele mesmo.
+    x: i32,
+    y: i32,
 }
-
 impl Surface {
     const EMPTY: Self = Self {
         pid: 0,
@@ -49,6 +52,8 @@ impl Surface {
         pitch: 0,
         shown: false,
         z: 0,
+        x: 0,
+        y: 0,
     };
 }
 
@@ -159,6 +164,7 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
     // Mapeia no espaço do chamador, em fatia fixa por id.
     let client_address =
         imagineos_abi::SURFACE_REGION_BASE + (slot as u64) * imagineos_abi::SURFACE_REGION_STRIDE;
+    let _ = crate::kernel_log::append(b"surface: create enter\n");
     let mapped = crate::process::with_current_space(|space| {
         space.map_framebuffer_range(
             client_address,
@@ -170,6 +176,15 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
         let _ = crate::kernel_log::append(b"surface: map failed\n");
         return Err(ENOSPC);
     }
+    // Debug: a página 2 da região está presente para o cliente?
+    let page2_ok = crate::process::with_current_space(|space| {
+        space.translate(client_address + 0x2000).is_some()
+    });
+    let _ = crate::kernel_log::append(if page2_ok {
+        b"surface: page2 present\n"
+    } else {
+        b"surface: page2 MISSING\n"
+    });
     surfaces.slots[slot] = Surface {
         pid,
         width: info.width as i32,
@@ -178,6 +193,10 @@ pub fn create(info: &mut SurfaceInfo) -> Result<(), i64> {
         pitch: info.width,
         shown: false,
         z: surfaces.z_counter,
+        // Nova superfície nasce em cascata a partir do canto superior esquerdo;
+        // o dono chama `surface_move` para posicioná-la de verdade.
+        x: 40 + (slot as i32) * 24,
+        y: 24 + (slot as i32) * 24,
     };
     surfaces.z_counter = surfaces.z_counter.wrapping_add(1);
     info.id = slot as u32;
@@ -193,6 +212,24 @@ fn find(surface_id: u32) -> Option<usize> {
         return None;
     }
     Some(slot)
+}
+
+/// Reposiciona a superfície do processo atual. O dono é quem decide onde a
+/// própria janela fica (o WM movimenta as janelas dele; o painel fica onde
+/// nasceu).
+pub fn move_surface(surface_id: u32, x: i32, y: i32) -> Result<(), i64> {
+    let surfaces = surfaces();
+    let Some(slot) = find(surface_id) else {
+        return Err(ENOENT);
+    };
+    let pid = crate::process::current_pid();
+    if surfaces.slots[slot].pid != pid {
+        return Err(EINVAL);
+    }
+    surfaces.slots[slot].x = x.max(0);
+    surfaces.slots[slot].y = y.max(0);
+    dirty(surface_id);
+    Ok(())
 }
 
 /// Marca a superfície como visível/oculta. Só o dono pode fazê-lo.
@@ -312,6 +349,9 @@ pub fn snapshot_mapped(output: &mut [Snapshot]) -> usize {
             height: surface.height as u32,
             pitch: surface.pitch,
             address: virtual_address,
+            x: surface.x,
+            y: surface.y,
+            z: surface.z,
         };
         count += 1;
     }

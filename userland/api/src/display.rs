@@ -211,3 +211,13 @@ pub fn send_surface_event(surface_id: u32, mut event: crate::abi::SurfaceEvent) 
         [(&mut event as *mut crate::abi::SurfaceEvent) as u64, 0, 0, 0, 0, 0],
     ));
 }
+
+/// Reposiciona uma superfície deste processo na tela (o dono decide onde a
+/// própria janela fica; o display server só compõe).
+pub fn move_surface(surface_id: u32, x: i32, y: i32) -> Result<()> {
+    checked(syscall::invoke(
+        crate::abi::SYS_SURFACE_MOVE,
+        [surface_id as u64, x.max(0) as u64, y.max(0) as u64, 0, 0, 0],
+    ))
+    .map(|_| ())
+}

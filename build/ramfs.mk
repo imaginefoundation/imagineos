@@ -10,7 +10,7 @@
 #   * os headers da libc e as libs estáticas (libdreamcore.a, libc.a, libm.a);
 #   * os objetos crt0/crt1/crti/crtn e o linker script do userspace;
 #   * os binários compilados (init, getty, shell e utilitários);
-#   * o payload do instalador (bootstrap, dzImage, Limine e initramfs instalado).
+#   * o payload do instalador (dzImage, Limine e initramfs instalado).
 #
 # Uso isolado:  make -f build/ramfs.mk
 # Alvos:        ramfs, ramfs-image
@@ -21,9 +21,10 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
 # As peças que entram no tar vêm de outros makefiles. Em vez de duplicar suas
 # regras aqui, pedimos que o make os construa recursivamente: kernel.mk produz
-# bootstrap/dzImage e userland.mk produz os programas e as libs de userspace.
-KERNEL_MK   := $(ROOT)/build/kernel.mk
-USERLAND_MK := $(ROOT)/build/userland.mk
+# o dzImage e userland.mk produz os programas e as libs de userspace.
+KERNEL_MK      := $(ROOT)/build/kernel.mk
+USERLAND_MK    := $(ROOT)/build/userland.mk
+THIRD_PARTY_MK := $(ROOT)/build/third_party.mk
 
 # Todo arquivo da árvore `ramfs/` é dependência do tar. Sem isto, editar um
 # arquivo de `ramfs/` (um script em `etc/`, uma fonte) não disparava a
@@ -37,23 +38,22 @@ ramfs:
 
 # Constrói tudo o que o USTAR empacota antes de montá-lo.
 ramfs-inputs: ramfs
-	$(MAKE) -f $(KERNEL_MK) bootstrap dzimage
+	$(MAKE) -f $(KERNEL_MK) dzimage
 	$(MAKE) -f $(USERLAND_MK) user-programs user-libs \
-		$(BUILD_DIR)/user/utilities/hello_c $(BUILD_DIR)/user/utilities/tcc \
-		$(TCC_SOURCE)/libtcc1.a $(TCC_SOURCE)/runmain.o
+		$(BUILD_DIR)/user/utilities/hello_c
+	$(MAKE) -f $(THIRD_PARTY_MK) third-party
 
 ramfs-image: ramfs-inputs
 	$(MAKE) -f $(RAMFS_MK) $(RAMFS_IMAGE)
 
 # A regra do tar só lista entradas que este makefile sabe localizar: os
-# artefatos compilados (`bootstrap`, `dzImage`, programas, libs) são garantidos
+# artefatos compilados (`dzImage`, programas, libs) são garantidos
 # por `ramfs-inputs` e usados diretamente nos comandos abaixo. Declará-los como
 # pré-requisitos aqui exigiria as regras de kernel.mk/userland.mk, que é
 # exatamente o acoplamento que a divisão elimina.
 $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
                 $(LIMINE_DIR)/BOOTX64.EFI $(ROOT)/boot/limine.conf \
                 $(ROOT)/boot/startup.nsh $(USERLAND_MK) $(KERNEL_MK)
-	@test -f $(BOOTSTRAP) || (echo "bootstrap.elf ausente"; exit 1)
 	@test -f $(DZ_IMAGE) || (echo "dzImage ausente"; exit 1)
 	@test -f $(BUILD_DIR)/user/sbin/init || (echo "programas de userspace ausentes"; exit 1)
 	rm -rf $(BUILD_DIR)/ramfs
@@ -71,9 +71,11 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crti.o
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crtn.o
 	cp $(ROOT)/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
+ifeq ($(THIRD_PARTY),1)
+	# Runtime do TCC nativo (vindo de build/third_party.mk).
 	cp $(TCC_SOURCE)/libtcc1.a $(BUILD_DIR)/ramfs/usr/lib/tcc/libtcc1.a
 	cp $(TCC_SOURCE)/runmain.o $(BUILD_DIR)/ramfs/usr/lib/tcc/runmain.o
-
+endif
 	# Binários userland
 	cp $(BUILD_DIR)/user/sbin/init $(BUILD_DIR)/ramfs/sbin/init
 	cp $(BUILD_DIR)/user/sbin/getty $(BUILD_DIR)/ramfs/sbin/getty
@@ -84,11 +86,27 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	for utility in $(USER_C_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
 	done
+ifeq ($(THIRD_PARTY),1)
+	# TCC nativo do ImagineOS (compilado em build/third_party.mk)
+	cp $(BUILD_DIR)/user/utilities/tcc $(BUILD_DIR)/ramfs/bin/tcc
+endif
 	# Clientes EDE (protocolo de superfícies). O binário sai como
 	# .build/user/bin/ede-<nome>, copiado para /bin/ede-<nome>.
 	for program in $(notdir $(EDE_PROGRAMS)); do \
 		cp $(BUILD_DIR)/user/bin/$$program $(BUILD_DIR)/ramfs/bin/$$program; \
 	done
+	# Stack Liminal: display server + window manager/compositor.
+	cp $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/ramfs/bin/liminal-server
+	cp $(BUILD_DIR)/user/bin/liminal-client $(BUILD_DIR)/ramfs/bin/liminal-client
+
+	# Temas (.tpf — Theme Package File): empacota o tema clássico num TAR ustar
+	# com `themeConfig.json` (nome, autor, versão, descrição, compositor) e o
+	# CSS `window/windowTheme.css`. O WM olha para system/themes/current.tpf,
+	# com fallback classic.tpf; as fontes do tema ficam em ramfs/system/themes/classic.
+	mkdir -p $(BUILD_DIR)/ramfs/system/themes
+	tar --format=ustar -C $(RAMFS_ROOT)/system/themes/classic \
+		--exclude='*cursor*' -cf $(BUILD_DIR)/ramfs/system/themes/classic.tpf themeConfig.json window
+	cp $(BUILD_DIR)/ramfs/system/themes/classic.tpf $(BUILD_DIR)/ramfs/system/themes/current.tpf
 
 	# Tar para o instalador do SO
 	tar --format=ustar --numeric-owner --owner=0 --group=0 \
@@ -97,7 +115,6 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 
 	# Adiciona os arquivos do instalador
 	mkdir -p $(BUILD_DIR)/ramfs/system/install
-	cp $(BOOTSTRAP) $(BUILD_DIR)/ramfs/system/install/bootstrap.elf
 	cp $(DZ_IMAGE) $(BUILD_DIR)/ramfs/system/install/dzImage
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(BUILD_DIR)/ramfs/system/install/BOOTX64.EFI
 	cp $(ROOT)/boot/limine.conf $(BUILD_DIR)/ramfs/system/install/limine.conf

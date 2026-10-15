@@ -168,6 +168,12 @@ impl Surface {
         ))
         .map(|_| ())
     }
+
+    /// Reposiciona a superfície na tela (o dono decide onde a própria janela
+    /// fica; o display server compõe no novo endereço no próximo quadro).
+    pub fn move_to(&self, x: i32, y: i32) -> Result<()> {
+        crate::display::move_surface(self.id, x, y)
+    }
 }
 
 /// Remove a superfície (sai da tela e libera o slot).

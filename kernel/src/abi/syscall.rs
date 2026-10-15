@@ -18,6 +18,7 @@ use imagineos_abi::{
     SYS_FB_INFO, SYS_FB_MAP, SYS_INPUT_POLL, SYS_CONSOLE_RELEASE, SYS_POINTER_POSITION,
     SYS_SURFACE_CREATE, SYS_SURFACE_PRESENT, SYS_SURFACE_FLUSH, SYS_SURFACE_DESTROY,
     SYS_SURFACE_POLL, SYS_SURFACE_SNAPSHOT, SYS_SURFACE_SEND_EVENT, SYS_PIVOT_ROOT,
+    SYS_SURFACE_MOVE,
 };
 
 struct SharedKeyboard(UnsafeCell<Keyboard>);
@@ -331,6 +332,7 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
         SYS_SURFACE_POLL => surface_poll(frame_ref),
         SYS_SURFACE_SNAPSHOT => surface_snapshot(frame_ref),
         SYS_SURFACE_SEND_EVENT => surface_send_event(frame_ref),
+        SYS_SURFACE_MOVE => surface_move(frame_ref),
         SYS_EXEC | SYS_EXECVE => {
             // `exec` cria outro processo (histórico); `execve` substitui a imagem
             // do processo atual, completando o par `fork` + `exec` do POSIX.
@@ -1086,6 +1088,16 @@ fn surface_send_event(frame: &mut TrapFrame) -> *mut TrapFrame {
         0
     } else {
         (-2i64) as u64 // ENOENT
+    };
+    frame
+}
+
+/// `surface_move(id, x, y)`: o dono reposiciona a própria superfície.
+fn surface_move(frame: &mut TrapFrame) -> *mut TrapFrame {
+    frame.rax = match crate::surface::move_surface(frame.rdi as u32, frame.rsi as i32, frame.rdx as i32)
+    {
+        Ok(()) => 0,
+        Err(code) => code as u64,
     };
     frame
 }

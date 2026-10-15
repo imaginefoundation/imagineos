@@ -8,3 +8,4 @@ third_party/*
 /userland/target/
 /ramfs
 toolchain/
+/.testing

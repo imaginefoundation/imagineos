@@ -30,6 +30,12 @@ DISTRIBUTION   := imagineos
 TARGET         := x86_64-unknown-none
 KERNEL_FEATURES ?=
 
+# Interruptor dos utilitários third_party (TinyCC upstream etc.). Com
+# THIRD_PARTY=0 eles ficam fora do build e da ISO; o Limine continua
+# obrigatório (build/third_party.mk). Defina na linha de comando:
+#   make iso THIRD_PARTY=0
+THIRD_PARTY    ?= 1
+
 # ==============================================================================
 # FERRAMENTAS
 # ==============================================================================
@@ -49,7 +55,6 @@ BUILD_DIR      := $(ROOT)/.build
 DISTRO_DIR     := $(BUILD_DIR)/distro
 
 KERNEL         := $(ROOT)/target/$(TARGET)/release/dreamcore
-BOOTSTRAP      := $(BUILD_DIR)/bootstrap.elf
 DZ_IMAGE       := $(BUILD_DIR)/dzImage
 RAMFS_IMAGE    := $(BUILD_DIR)/initramfs.tar
 RAMFS_INST_IMG := $(BUILD_DIR)/initramfs-installed.tar
@@ -58,8 +63,6 @@ ISO_IMAGE      := $(DISTRO_DIR)/$(K_NAME)-$(shell date +%Y-%m-%d-%H-%M)-$(CODENA
 DISK_IMAGE     ?= $(BUILD_DIR)/imagineos-disk.img
 INSTALL_TARGET := $(BUILD_DIR)/installer-target.img
 
-# Ferramentas auxiliares compiladas no host
-DZPACK_BIN     := $(BUILD_DIR)/dzpack
 DFS_IMAGE_BIN  := $(BUILD_DIR)/dfs-image
 TCC_HOST       := $(BUILD_DIR)/toolchain/tcc
 
@@ -77,11 +80,8 @@ FONT_ASSET      := $(ROOT)/tools/assets/zap-vga16.psf
 
 RAMFS_ROOT     := $(ROOT)/ramfs
 RAMFS_DIRS     := bin dev etc sbin home system/fonts system/install tmp usr
-USER_UTILITIES := cat dmesg display distroinstall fdtest forktest globalconf grep kill ls mkdir ps rm shutdown su sudo touch uname vi hello
+USER_UTILITIES := cat dmesg distroinstall fdtest forktest globalconf grep kill ls mkdir ps rm shutdown su sudo touch uname vi hello
 USER_C_UTILITIES := hello_c tcc
-# Clientes EDE do protocolo de superfícies (userland/apps/ede/*.rs).
-EDE_SOURCES := $(wildcard $(ROOT)/userland/apps/ede/*.rs)
-EDE_PROGRAMS := $(patsubst $(ROOT)/userland/apps/ede/%.rs,$(BUILD_DIR)/user/bin/ede-%,$(EDE_SOURCES))
 
 # Manifestos e libs do userland
 USER_API_MANIFEST       := $(ROOT)/userland/api/Cargo.toml
@@ -89,15 +89,16 @@ USER_API_TARGET_DIR     := $(BUILD_DIR)/user/api-target
 USER_API_RLIB           := $(USER_API_TARGET_DIR)/$(TARGET)/release/libimagineos.rlib
 USER_API_DEPS           := $(USER_API_TARGET_DIR)/$(TARGET)/release/deps
 
-USER_RUNTIME_MANIFEST   := $(ROOT)/userland/runtimes/rust/Cargo.toml
+USER_RUNTIME_MANIFEST   := $(ROOT)/userland/runtimes/ImagineRustRuntime/Cargo.toml
 USER_RUNTIME_TARGET_DIR := $(BUILD_DIR)/user/runtime-target
 USER_RUNTIME_RLIB       := $(USER_RUNTIME_TARGET_DIR)/$(TARGET)/release/libimagineos_rt.rlib
 USER_RUNTIME_DEPS       := $(USER_RUNTIME_TARGET_DIR)/$(TARGET)/release/deps
 
-# Runtime de programas em C, implementada em Rust (userland/runtimes/c).
+# Runtime de programas em C, implementada em Rust
+# (userland/runtimes/ImagineCRuntime).
 # Produz um único objeto com _start, c_runtime_init, setjmp/longjmp e o
 # restaurador de sinais, substituindo os antigos crt0.S/crt0.c/signal.S/setjmp.S.
-USER_CRT_MANIFEST       := $(ROOT)/userland/runtimes/c/Cargo.toml
+USER_CRT_MANIFEST       := $(ROOT)/userland/runtimes/ImagineCRuntime/Cargo.toml
 USER_CRT_TARGET_DIR     := $(BUILD_DIR)/user/crt-target
 USER_CRT_RLIB           := $(BUILD_DIR)/user/libimagineos_crt.a
 
@@ -105,6 +106,8 @@ USER_PROGRAMS           := $(BUILD_DIR)/user/sbin/init \
                            $(BUILD_DIR)/user/sbin/getty \
                            $(BUILD_DIR)/user/sbin/horust \
                            $(BUILD_DIR)/user/bin/shell \
+                            $(BUILD_DIR)/user/bin/liminal-client \
+                            $(BUILD_DIR)/user/bin/liminal-server \
                            $(addprefix $(BUILD_DIR)/user/utilities/,$(USER_UTILITIES) $(USER_C_UTILITIES))
 
 USER_CFLAGS             := -ffreestanding -fno-stack-protector -fno-pic -fno-pie \

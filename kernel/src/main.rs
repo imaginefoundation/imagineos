@@ -19,7 +19,9 @@ mod input;
 pub mod ata;
 #[path = "drivers/block.rs"]
 pub mod block;
-#[path = "../../bootstrap/boot_info.rs"]
+#[path = "boot/boot.rs"]
+mod boot;
+#[path = "boot/boot_info.rs"]
 mod boot_info;
 #[path = "config.rs"]
 mod config;
@@ -74,6 +76,13 @@ mod utf8;
 static LOG_LINE_START: AtomicBool = AtomicBool::new(true);
 static EMBEDDED_FONT: &[u8] = include_bytes!("../../tools/assets/zap-vga16.psf");
 
+/// Ponto de entrada ELF visto pelo Limine. O módulo `boot` coleta as respostas
+/// das requisições do protocolo Limine, monta o `BootInfo` e chama `kernel_entry`.
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    boot::limine_start()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     unsafe {
@@ -83,7 +92,7 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
 
     serial_init();
     if boot_info.is_null() {
-        serial_write(b"KERNEL PANIC: bootstrap supplied no boot information\r\n");
+        serial_write(b"KERNEL PANIC: Limine supplied no boot information\r\n");
         halt();
     }
     let boot_info = unsafe { &*boot_info };

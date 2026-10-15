@@ -1,48 +1,31 @@
-//! Engine de temas do window manager.
+//! Motor de temas do Liminal (window manager / compositor do lado cliente).
 //!
-//! O WM olha para o tema em `system/themes/default.theme`, arquivo
-//! `window/windowTheme.css`. A aparência das janelas é um subconjunto de CSS
-//! interpretado por um parser embutido e renderizado com primitivas gráficas
-//! (retângulos e pixels) — sem bitmaps, como os toolkits clássicos:
+//! O WM carrega o tema de um pacote `.tpf` em `system/themes/current.tpf`
+//! (fallback `classic.tpf`), extrai `themeConfig.json` + `windowTheme.css`
+//! via `tpf.rs`, e expõe as cores/dimensões para o compositor.
 //!
-//! ```css
-//! /* comentário */
-//! #titlebar.focused {
-//!     background-color: #176b87;
-//!     color: #ffffff;
-//!     height: 18px;
-//! }
-//! #button.close  { background-color: #c94c4c; }
-//! #border        { border-width: 2px; border-color: #0b1118; }
-//! #cursor        { background-color: #ffffff; color: #101820; }
-//! ```
+//! O estilo das janelas lembra o Windows 3.1: **bordas em relevo**, com dois
+//! tons de claro e dois de escuro desenhados com primitivas simples — a face
+//! da janela é `silver`, o topo/esquerda recebem os tons claros e o
+//! baixo/direita os tons escuros, simulando volume sem bitmaps.
 //!
-//! Propriedades aceitas: `background-color`/`background`, `color`,
-//! `border-color`, `height`, `width`, `size`, `border-width`/`border`.
-//! Valores: `#rrggbb`, `#rgb`, `white`, `black` e `Npx`. Tudo o que faltar
-//! mantém o padrão embutido — o tema nunca quebra o WM.
-//!
-//! O parser não aloca e é independente do kernel, então roda nos testes de
-//! host com o arquivo real de `ramfs/`.
+//! As propriedades CSS aceitas estendem o subconjunto anterior com
+//! `border-style: raised|sunken|flat` e os seletores `#highlight`, `#shadow`,
+//! `#light` e `#dark` (os quatro tons do relevo).
 
+use crate::tpf;
 use imagineos::fs;
 
-/// Diretório raiz do tema ativo.
-pub const THEME_PATH: &str = "system/themes/default.theme";
-const THEME_PATH_MAX: usize = 96;
-/// Tamanho de leitura da syscall `read_file` (limite do kernel).
-const READ_FILE_CHUNK: usize = 4096;
-/// Teto para o arquivo de tema individual.
-const MAX_FILE_SIZE: usize = 64 * 1024;
-/// Tamanho máximo do retângulo de cursor salvo/restaurado por frame.
-pub const MAX_CURSOR_WIDTH: usize = 32;
-pub const MAX_CURSOR_HEIGHT: usize = 32;
-
 /// Cores/dimensões das janelas, derivadas do CSS com fallbacks embutidos.
+///
+/// O padrão já é o esquema Windows 3.1: cinza `silver`, barras de título
+/// `navy`, texto branco, relevo `raised`.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct WindowTheme {
     pub desktop: u32,
     pub desktop_accent: u32,
+    /// Face dos controles (janela, botões) — o "cinza de botão".
     pub window: u32,
     pub window_alt: u32,
     pub title_active: u32,
@@ -53,106 +36,153 @@ pub struct WindowTheme {
     pub button_minimize: u32,
     pub cursor_color: u32,
     pub cursor_outline: u32,
+    /// Relevo: lado iluminado (topo/esquerda, borda interna).
+    pub highlight: u32,
+    /// Relevo: lado sombreado (baixo/direita, borda interna).
+    pub shadow: u32,
+    /// Relevo: ponto de luz mais forte (borda externa superior).
+    pub light: u32,
+    /// Relevo: sombra mais forte (borda externa inferior).
+    pub dark: u32,
     pub border: i32,
     pub title_height: i32,
     pub button_size: i32,
     pub cursor_size: i32,
+    /// `raised` por padrão; `sunken` inverte, `flat` desenha borda sólida.
+    pub relief: Relief,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Relief {
+    Raised,
+    Sunken,
+    Flat,
 }
 
 pub const DEFAULTS: WindowTheme = WindowTheme {
-    desktop: 0x17212b,
-    desktop_accent: 0x1f6f78,
-    window: 0xe8edf2,
-    window_alt: 0xd8e0e8,
-    title_active: 0x176b87,
-    title_inactive: 0x465563,
+    desktop: 0x008080,          // teal clássico
+    desktop_accent: 0x004040,
+    window: 0xc0c0c0,           // cinza de botão
+    window_alt: 0xb4b4b4,
+    title_active: 0x000080,     // azul-marinho
+    title_inactive: 0x808080,
     title_text: 0xffffff,
-    border_color: 0x0b1118,
-    button_close: 0xc94c4c,
-    button_minimize: 0xe0ad4f,
+    border_color: 0xc0c0c0,     // a "moldura" agora é a face em relevo
+    button_close: 0xc0c0c0,     // botões com face de controle
+    button_minimize: 0xc0c0c0,
     cursor_color: 0xffffff,
-    cursor_outline: 0x101820,
+    cursor_outline: 0x000000,
+    highlight: 0xdfdfdf,
+    shadow: 0x808080,
+    light: 0xffffff,
+    dark: 0x000000,
     border: 2,
     title_height: 18,
-    button_size: 12,
+    button_size: 14,
     cursor_size: 10,
+    relief: Relief::Raised,
 };
+
+impl WindowTheme {
+    /// Cor dos glifos dos botões de controle (preto na face `silver`).
+    pub const fn title_text_ink(&self) -> u32 {
+        0x000000
+    }
+}
 
 /// Tema completo carregado do disco.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct Theme {
     pub window: WindowTheme,
+    /// Metadados de `themeConfig.json`.
+    pub name: [u8; 48],
+    pub name_len: usize,
+    pub author: [u8; 48],
+    pub author_len: usize,
+    pub version: [u8; 16],
+    pub version_len: usize,
 }
 
+#[allow(dead_code)]
 impl Theme {
-    /// Tema embutido, usado quando o disco não tem tema (boot mínimo).
     pub const fn builtin() -> Self {
-        Self { window: DEFAULTS }
+        Self {
+            window: DEFAULTS,
+            name: [0; 48],
+            name_len: 0,
+            author: [0; 48],
+            author_len: 0,
+            version: [0; 16],
+            version_len: 0,
+        }
     }
 
-    /// Carrega o tema do disco. Falha no CSS degrada para os padrões: o WM
-    /// nunca deixa de subir por causa de um tema ruim.
-    pub fn load() -> Self {
-        let mut window = DEFAULTS;
-        let mut css = [0u8; MAX_FILE_SIZE];
-        if let Some(length) = read_theme_file("window/windowTheme.css", &mut css) {
-            apply_css(&mut window, &css[..length]);
+    pub fn name(&self) -> &str {
+        if self.name_len == 0 {
+            return "builtin";
         }
-        Self { window }
+        core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("builtin")
+    }
+
+    /// Bytes e comprimento do nome do tema (para exibição sem `alloc`).
+    pub fn name_bytes(&self) -> [u8; 48] {
+        self.name
+    }
+
+    pub fn name_len(&self) -> usize {
+        self.name_len
+    }
+
+    /// Carrega o tema do disco. Falha degrada para o padrão 3.1 embutido:
+    /// o WM nunca deixa de subir por causa de um tema ruim.
+    ///
+    /// Os buffers de trabalho são estáticos, não de stack: a stack de
+    /// 128 KiB do processo não comporta o pacote (256 KiB) + CSS (64 KiB).
+    pub fn load() -> Self {
+        load_theme_static()
     }
 }
 
-/// Lê um arquivo dentro do diretório do tema para `output`, devolvendo o
-/// comprimento lido. `fs::read_file` transfere até 4 KiB por chamada, então
-/// arquivos maiores são completados com leituras por descritor.
-fn read_theme_file(relative: &str, output: &mut [u8]) -> Option<usize> {
-    let mut path = [0u8; THEME_PATH_MAX];
-    let mut length = THEME_PATH.len();
-    path[..length].copy_from_slice(THEME_PATH.as_bytes());
-    if length + 1 + relative.len() >= THEME_PATH_MAX {
-        return None;
-    }
-    path[length] = b'/';
-    length += 1;
-    path[length..length + relative.len()].copy_from_slice(relative.as_bytes());
-    length += relative.len();
-    let path = core::str::from_utf8(&path[..length]).ok()?;
+static mut THEME_PACKAGE: [u8; tpf::MAX_PACKAGE_SIZE] = [0; tpf::MAX_PACKAGE_SIZE];
+static mut THEME_CSS: [u8; tpf::MAX_MEMBER_SIZE] = [0; tpf::MAX_MEMBER_SIZE];
 
-    // Leitura direta: cobre o CSS (que é pequeno).
-    if output.len() >= READ_FILE_CHUNK {
-        if let Ok(read) = fs::read_file(path, &mut output[..READ_FILE_CHUNK]) {
-            if read < READ_FILE_CHUNK {
-                return Some(read);
-            }
-            // Arquivo de 4 KiB ou mais: reabre e completa por descritor.
-            let mut total = read;
-            let file = fs::open(path, fs::OpenOptions::new().read(true)).ok()?;
-            let fd = file.descriptor();
-            while total < output.len() {
-                let chunk = READ_FILE_CHUNK.min(output.len() - total);
-                match fs::read(fd, &mut output[total..total + chunk]) {
-                    Ok(read) if read > 0 => total += read,
-                    _ => break,
-                }
-            }
-            let _ = fs::close(fd);
-            if total > 0 {
-                return Some(total);
-            }
-        }
+/// Corpo de `Theme::load` fora do método (buffers estáticos).
+fn load_theme_static() -> Theme {
+    // Single-threaded: o WM carrega o tema uma única vez, no boot.
+    let package = unsafe { &mut *core::ptr::addr_of_mut!(THEME_PACKAGE) };
+    let css = unsafe { &mut *core::ptr::addr_of_mut!(THEME_CSS) };
+    let path = if fs::is_file(tpf::THEME_FILE).unwrap_or(false) {
+        tpf::THEME_FILE
+    } else {
+        tpf::DEFAULT_THEME_FILE
+    };
+    let Some(length) = tpf::read_package(path, package) else {
+        return Theme::builtin();
+    };
+    let mut config = tpf::ThemeConfig::EMPTY;
+    let css_len = tpf::unpack_theme(&package[..length], &mut config, css);
+    let mut window = DEFAULTS;
+    apply_css(&mut window, &css[..css_len]);
+    Theme {
+            window,
+            name: config.name,
+            name_len: config.name_len,
+            author: config.author,
+            author_len: config.author_len,
+            version: config.version,
+            version_len: config.version_len,
     }
-    None
 }
 
 // ----------------------------------------------------------------------------
-// Parser do CSS
+// Parser do CSS (subconjunto, sem alocador)
 // ----------------------------------------------------------------------------
 
 /// Aplica o conteúdo de um CSS ao tema.
 pub fn apply_css(theme: &mut WindowTheme, source: &[u8]) {
-    // Duas passadas: primeiro as regras genéricas (`#titlebar`), depois as
-    // específicas (`#titlebar.focused`). Assim a especificidade vence
-    // independentemente da ordem no arquivo, como no CSS real.
+    // Duas passadas: genéricas (`#titlebar`) primeiro, específicas
+    // (`#titlebar.focused`) depois — especificidade vence, como no CSS real.
     apply_css_pass(theme, source, false);
     apply_css_pass(theme, source, true);
 }
@@ -162,7 +192,6 @@ fn apply_css_pass(theme: &mut WindowTheme, source: &[u8], specific: bool) {
     while cursor < source.len() {
         skip_whitespace_and_comments(source, &mut cursor);
         if cursor >= source.len() || source[cursor] != b'#' {
-            // Regra sem seletor `#` (ou lixo): pula até o fim do bloco.
             while cursor < source.len() && source[cursor] != b'{' {
                 cursor += 1;
             }
@@ -177,7 +206,6 @@ fn apply_css_pass(theme: &mut WindowTheme, source: &[u8], specific: bool) {
             return;
         }
         let selector = trim(&source[selector_start..cursor]);
-        // Nesta passada só processamos os seletores do tipo correspondente.
         let has_variant = selector[1..].contains(&b'.');
         if has_variant != specific {
             cursor += 1;
@@ -188,8 +216,7 @@ fn apply_css_pass(theme: &mut WindowTheme, source: &[u8], specific: bool) {
         let body_start = cursor;
         skip_block(source, &mut cursor);
         let body_end = cursor.saturating_sub(1).max(body_start);
-        let body = &source[body_start..body_end];
-        apply_rule(theme, selector, body);
+        apply_rule(theme, selector, &source[body_start..body_end]);
     }
 }
 
@@ -260,7 +287,7 @@ fn apply_rule(theme: &mut WindowTheme, selector: &[u8], body: &[u8]) {
     }
 }
 
-/// Compara nomes em minúsculas (`BACKGROUND-COLOR` casa com `background-color`).
+/// Compara nomes em minúsculas.
 fn name_is(name: &[u8], expected: &str) -> bool {
     name.len() == expected.len()
         && name
@@ -269,9 +296,7 @@ fn name_is(name: &[u8], expected: &str) -> bool {
             .all(|(a, b)| a.to_ascii_lowercase() == *b)
 }
 
-/// O seletor casa com `#base[.modificador]`? Um seletor sem modificador
-/// (`#titlebar`) vale para todas as variantes; um com modificador
-/// (`#titlebar.focused`) só para a variante pedida.
+/// O seletor casa com `#base[.modificador]`?
 fn selector_matches(selector: &[u8], base: &str, modifier: Option<&str>) -> bool {
     if selector.is_empty() || selector[0] != b'#' {
         return false;
@@ -292,13 +317,16 @@ fn selector_matches(selector: &[u8], base: &str, modifier: Option<&str>) -> bool
     }
 }
 
-/// Trata uma propriedade de um bloco. O mesmo conjunto de propriedades vale
-/// para todos os seletores; o que muda é para qual cor/dimensão ela aponta.
+/// Trata uma propriedade de um bloco.
 fn set_property(theme: &mut WindowTheme, selector: &[u8], name: &[u8], value: &[u8]) {
     let color = if name_is(name, "background-color")
         || name_is(name, "background")
         || name_is(name, "border-color")
         || name_is(name, "color")
+        || name_is(name, "highlight-color")
+        || name_is(name, "shadow-color")
+        || name_is(name, "light-color")
+        || name_is(name, "dark-color")
     {
         parse_color(value)
     } else {
@@ -314,14 +342,23 @@ fn set_property(theme: &mut WindowTheme, selector: &[u8], name: &[u8], value: &[
     } else {
         None
     };
+    if name_is(name, "border-style") {
+        if name_is(trim(value), "sunken") {
+            theme.relief = Relief::Sunken;
+        } else if name_is(trim(value), "flat") {
+            theme.relief = Relief::Flat;
+        } else {
+            theme.relief = Relief::Raised;
+        }
+        return;
+    }
     let Some(color) = color else {
         if let Some(dimension) = dimension {
             set_dimension(theme, selector, dimension);
         }
         return;
     };
-    // Regras genéricas já rodaram na primeira passada; nesta (específica)
-    // apenas as variantes casam, então a especificidade é respeitada.
+    // Específicas primeiro (passada 2), genéricas na passada 1.
     if selector_matches(selector, "titlebar", Some("focused")) {
         if name_is(name, "color") {
             theme.title_text = color;
@@ -358,8 +395,17 @@ fn set_property(theme: &mut WindowTheme, selector: &[u8], name: &[u8], value: &[
         }
     } else if selector_matches(selector, "button", None) {
         theme.button_close = color;
+        theme.button_minimize = color;
     } else if selector_matches(selector, "border", None) {
         theme.border_color = color;
+    } else if selector_matches(selector, "highlight", None) {
+        theme.highlight = color;
+    } else if selector_matches(selector, "shadow", None) {
+        theme.shadow = color;
+    } else if selector_matches(selector, "light", None) {
+        theme.light = color;
+    } else if selector_matches(selector, "dark", None) {
+        theme.dark = color;
     } else if selector_matches(selector, "cursor", None) {
         if name_is(name, "color") || name_is(name, "border-color") {
             theme.cursor_outline = color;
@@ -392,7 +438,8 @@ fn set_dimension(theme: &mut WindowTheme, selector: &[u8], value: i32) {
     }
 }
 
-/// `#rrggbb` (ou `#rgb`), além dos nomes `white`/`black`.
+/// `#rrggbb`/`#rgb`, nomes `white`/`black` e as cores nomeadas do Windows 3.1
+/// (suficiente para temas clássicos).
 pub fn parse_color(value: &[u8]) -> Option<u32> {
     let value = trim(value);
     if value.first() == Some(&b'#') {
@@ -413,11 +460,21 @@ pub fn parse_color(value: &[u8]) -> Option<u32> {
         }
         return None;
     }
-    if name_is(value, "white") {
-        return Some(0xffffff);
-    }
-    if name_is(value, "black") {
-        return Some(0x000000);
+    const NAMED: &[(&str, u32)] = &[
+        ("white", 0xffffff),
+        ("black", 0x000000),
+        ("silver", 0xc0c0c0),
+        ("gray", 0x808080),
+        ("navy", 0x000080),
+        ("teal", 0x008080),
+        ("red", 0xff0000),
+        ("green", 0x008000),
+        ("yellow", 0xffff00),
+    ];
+    for (name, rgb) in NAMED {
+        if name_is(value, name) {
+            return Some(*rgb);
+        }
     }
     None
 }
@@ -441,15 +498,13 @@ pub fn parse_px(value: &[u8]) -> Option<i32> {
     }
     let mut number: i32 = 0;
     for &digit in digits {
-        number = number
-            .saturating_mul(10)
-            .saturating_add((digit - b'0') as i32);
+        number = number.saturating_mul(10).saturating_add((digit - b'0') as i32);
     }
     Some(number)
 }
 
 // ----------------------------------------------------------------------------
-// Testes de host: rodam com o arquivo real do tema em ramfs/
+// Testes de host
 // ----------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -457,51 +512,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_css_from_default_theme() {
-        let css = core::str::from_utf8(include_bytes!(
-            "../../../ramfs/system/themes/default.theme/window/windowTheme.css"
-        ))
-        .unwrap();
-        let mut theme = DEFAULTS;
-        apply_css(&mut theme, css.as_bytes());
-        // Dimensões sempre positivas depois do parse.
-        assert!(theme.title_height > 0);
-        assert!(theme.button_size > 0);
-        assert!(theme.border >= 0);
+    fn defaults_are_windows_31() {
+        assert_eq!(DEFAULTS.window, 0xc0c0c0);
+        assert_eq!(DEFAULTS.title_active, 0x000080);
+        assert_eq!(DEFAULTS.relief, Relief::Raised);
+        // Relevo precisa dos 4 tons distintos e na ordem de intensidade.
+        assert!(DEFAULTS.light > DEFAULTS.highlight);
+        assert!(DEFAULTS.shadow > DEFAULTS.dark);
     }
 
     #[test]
-    fn css_specificity_and_fallbacks() {
+    fn parses_relief_and_tones() {
         let mut theme = DEFAULTS;
         apply_css(
             &mut theme,
-            b"/* comment */ #titlebar { background-color: #445566; height: 24px; }\n\
-              #titlebar.focused { background-color: #112233; }\n\
-              #button.close { background-color: #ff0000; }\n\
-              #border { border-width: 4px; border-color: #010203; }\n\
-              #desktop { background-color: #000000; }",
+            b"#window { background-color: silver; border-style: raised; }\n\
+              #highlight { background-color: #dfdfdf; }\n\
+              #shadow { background-color: #808080; }\n\
+              #light { background-color: #ffffff; }\n\
+              #dark { background-color: #000000; }\n\
+              #titlebar.focused { background-color: navy; color: white; }\n\
+              #button { size: 14px; background-color: silver; }",
         );
-        // A variante específica vence independentemente da ordem.
-        assert_eq!(theme.title_active, 0x112233);
-        assert_eq!(theme.title_height, 24);
-        assert_eq!(theme.button_close, 0xff0000);
-        assert_eq!(theme.border, 4);
-        assert_eq!(theme.border_color, 0x010203);
-        assert_eq!(theme.desktop, 0x000000);
-        // Tudo o que não foi declarado mantém o padrão:
-        assert_eq!(theme.window, DEFAULTS.window);
-        assert_eq!(theme.title_inactive, DEFAULTS.title_inactive);
+        assert_eq!(theme.window, 0xc0c0c0);
+        assert_eq!(theme.relief, Relief::Raised);
+        assert_eq!(theme.title_active, 0x000080);
+        assert_eq!(theme.title_text, 0xffffff);
+        assert_eq!(theme.button_size, 14);
+    }
+
+    #[test]
+    fn sunken_style_switches() {
+        let mut theme = DEFAULTS;
+        apply_css(&mut theme, b"#window { border-style: sunken; }");
+        assert_eq!(theme.relief, Relief::Sunken);
+        apply_css(&mut theme, b"#window { border-style: flat; }");
+        assert_eq!(theme.relief, Relief::Flat);
+        // Sem valor reconhecido: volta a raised.
+        apply_css(&mut theme, b"#window { border-style: groovy; }");
+        assert_eq!(theme.relief, Relief::Raised);
     }
 
     #[test]
     fn parses_colors_and_px() {
         assert_eq!(parse_color(b"#176b87"), Some(0x176b87));
         assert_eq!(parse_color(b"#FFF"), Some(0xffffff));
-        assert_eq!(parse_color(b"white"), Some(0xffffff));
+        assert_eq!(parse_color(b"navy"), Some(0x000080));
         assert_eq!(parse_color(b"rgb(1,2,3)"), None);
         assert_eq!(parse_px(b"18px"), Some(18));
         assert_eq!(parse_px(b"18"), Some(18));
         assert_eq!(parse_px(b"-2px"), None);
         assert_eq!(parse_px(b"auto"), None);
+    }
+
+    #[test]
+    fn specificity_and_fallbacks() {
+        let mut theme = DEFAULTS;
+        apply_css(
+            &mut theme,
+            b"/* comment */ #titlebar { background-color: #445566; height: 24px; }\n\
+              #titlebar.focused { background-color: #112233; }\n\
+              #button.close { background-color: #ff0000; }",
+        );
+        assert_eq!(theme.title_active, 0x112233);
+        assert_eq!(theme.title_height, 24);
+        assert_eq!(theme.button_close, 0xff0000);
+        assert_eq!(theme.window, DEFAULTS.window);
+        assert_eq!(theme.title_inactive, DEFAULTS.title_inactive);
+    }
+
+    #[test]
+    fn theme_config_fields_survive_roundtrip() {
+        // O tema embutido tem nome "builtin" e os campos vazios.
+        let theme = Theme::builtin();
+        assert_eq!(theme.name(), "builtin");
     }
 }

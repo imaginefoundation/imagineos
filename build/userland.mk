@@ -5,17 +5,20 @@
 # Compila os programas de userspace para o alvo x86_64-unknown-none:
 #   * apps principais: init, getty, shell      -> .build/user/{sbin,bin}
 #   * utilitários Rust: ls, cat, ...           -> .build/user/utilities
-#   * utilitários C: hello_c, tcc              -> .build/user/utilities
+#   * utilitários C: hello_c                   -> .build/user/utilities
 #   * libc estática (libdreamcore.a), objetos crt e runtime C.
 #
+# O código third_party (TinyCC upstream, runtime nativo do TCC) vive em
+# build/third_party.mk, com o interruptor THIRD_PARTY em common.mk.
+#
 # Uso isolado:  make -f build/userland.mk
-# Alvos:        user-programs, user-libs, tcc-source, c-app
+# Alvos:        user-programs, user-libs, c-app
 
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
-.PHONY: user-programs user-libs tcc-source c-app
+.PHONY: user-programs user-libs c-app
 
-user-programs: $(USER_PROGRAMS) $(EDE_PROGRAMS)
+user-programs: $(USER_PROGRAMS) $(EDE_PROGRAMS) $(LIMINAL_PROGRAMS)
 
 user-libs: $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/user/crt_empty.o
 
@@ -28,7 +31,7 @@ $(USER_API_RLIB): $(USER_API_MANIFEST) $(wildcard $(ROOT)/userland/api/src/*.rs)
 	$(CARGO) build --manifest-path $(USER_API_MANIFEST) \
 		--target $(TARGET) --release --target-dir $(USER_API_TARGET_DIR)
 
-$(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/rust/src/lib.rs $(USER_API_RLIB)
+$(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/ImagineRustRuntime/src/lib.rs $(USER_API_RLIB)
 	$(CARGO) build --manifest-path $(USER_RUNTIME_MANIFEST) \
 		--target $(TARGET) --release --target-dir $(USER_RUNTIME_TARGET_DIR)
 
@@ -36,8 +39,8 @@ $(USER_RUNTIME_RLIB): $(USER_RUNTIME_MANIFEST) $(ROOT)/userland/runtimes/rust/sr
 # Programas Rust de userspace
 # ------------------------------------------------------------------------------
 
-# # Apps principais (init, getty, horust) em userland/apps/
-$(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/apps/%.rs $(ROOT)/userland/linker.ld \
+# Apps principais (init, getty) em userland/programs/
+$(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/programs/%.rs $(ROOT)/userland/linker.ld \
                           $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name $* --edition 2024 --target $(TARGET) \
@@ -46,9 +49,9 @@ $(BUILD_DIR)/user/sbin/%: $(ROOT)/userland/apps/%.rs $(ROOT)/userland/linker.ld 
 		-C panic=abort -C relocation-model=static \
 		-C link-arg=-T$(ROOT)/userland/linker.ld $< -o $@
 
-# O shell é um binário multi-módulo (`userland/apps/shell/`), então tem regra
-# própria: o padrão `%.rs` não cobre `main.rs` mais os módulos irmãos.
-SHELL_SOURCES := $(wildcard $(ROOT)/userland/apps/shell/*.rs)
+# O shell é um binário multi-módulo (`userland/programs/shell/`), então tem
+# regra própria: o padrão `%.rs` não cobre `main.rs` mais os módulos irmãos.
+SHELL_SOURCES := $(wildcard $(ROOT)/userland/programs/shell/*.rs)
 
 $(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/userland/linker.ld \
                              $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
@@ -58,14 +61,14 @@ $(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/u
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/shell/main.rs -o $@
+	$(ROOT)/userland/programs/shell/main.rs -o $@
 
-# Horust (init-style): multi-módulo em userland/apps/horust/, instalado em
-# /sbin/horust. O horust-lite.rs raiz é o binário; os módulos ficam ao lado.
-HORUST_SOURCES := $(wildcard $(ROOT)/userland/apps/horust/*.rs)
+# Horust (init-style): multi-módulo em userland/programs/horust/, instalado
+# em /sbin/horust. O horust-lite.rs raiz é o binário; os módulos ficam ao lado.
+HORUST_SOURCES := $(wildcard $(ROOT)/userland/programs/horust/*.rs)
 
 $(BUILD_DIR)/user/sbin/horust: $(filter-out %/tests.rs,$(HORUST_SOURCES)) \
-                               $(ROOT)/userland/apps/horust-lite.rs \
+                               $(ROOT)/userland/programs/horust-lite.rs \
                                $(ROOT)/userland/linker.ld $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name horust --edition 2024 --target $(TARGET) \
@@ -73,20 +76,36 @@ $(BUILD_DIR)/user/sbin/horust: $(filter-out %/tests.rs,$(HORUST_SOURCES)) \
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/horust-lite.rs -o $@
+	$(ROOT)/userland/programs/horust-lite.rs -o $@
 
-# Display server/window manager (multi-module, separado em seu diretório).
-DISPLAY_SOURCES := $(wildcard $(ROOT)/userland/apps/display/*.rs)
+# Liminal stack: o liminalServer é o display server (framebuffer, composição
+# em backbuffer, eventos); o liminalClient é o window manager/compositor
+# (janelas, temas .tpf, apps .xapp).
+LIMINAL_SERVER_SOURCES := $(wildcard $(ROOT)/userland/programs/liminalServer/*.rs)
 
-$(BUILD_DIR)/user/utilities/display: $(DISPLAY_SOURCES) $(ROOT)/userland/linker.ld \
-                                    $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
+$(BUILD_DIR)/user/bin/liminal-server: $(LIMINAL_SERVER_SOURCES) $(ROOT)/userland/linker.ld \
+                                     $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
-	$(RUSTC) --crate-name display --edition 2024 --target $(TARGET) \
+	$(RUSTC) --crate-name liminal_server --edition 2024 --target $(TARGET) \
 	--extern imagineos=$(USER_API_RLIB) --extern imagineos_rt=$(USER_RUNTIME_RLIB) \
 	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
 	-C panic=abort -C relocation-model=static \
 	-C link-arg=-T$(ROOT)/userland/linker.ld \
-	$(ROOT)/userland/apps/display/main.rs -o $@
+	$(ROOT)/userland/programs/liminalServer/main.rs -o $@
+
+LIMINAL_CLIENT_SOURCES := $(wildcard $(ROOT)/userland/programs/liminalClient/*.rs)
+
+$(BUILD_DIR)/user/bin/liminal-client: $(LIMINAL_CLIENT_SOURCES) $(ROOT)/userland/linker.ld \
+                                     $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) --crate-name liminal_client --edition 2024 --target $(TARGET) \
+	--extern imagineos=$(USER_API_RLIB) --extern imagineos_rt=$(USER_RUNTIME_RLIB) \
+	-L dependency=$(USER_API_DEPS) -L dependency=$(USER_RUNTIME_DEPS) \
+	-C panic=abort -C relocation-model=static \
+	-C link-arg=-T$(ROOT)/userland/linker.ld \
+	$(ROOT)/userland/programs/liminalClient/main.rs -o $@
+
+LIMINAL_PROGRAMS := $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/user/bin/liminal-client
 
 # Clientes externos do protocolo de superfícies (EDE): um ELF por arquivo em
 # userland/apps/ede/*.rs, instalados em /bin. A regra genérica de /bin (abaixo)
@@ -180,52 +199,6 @@ $(BUILD_DIR)/user/c/%.elf: $(ROOT)/ramfs/home/%.c $(ROOT)/userland/libc/include/
 		-Wl,--build-id=none $(BUILD_DIR)/user/c/$*.o $(USER_CRT_OBJECTS) -o $@
 
 # ------------------------------------------------------------------------------
-# TinyCC (host e versão nativa do ImagineOS)
+# TinyCC (host e versão nativa do ImagineOS) mudou para build/third_party.mk;
+# controlado por THIRD_PARTY (veja build/common.mk).
 # ------------------------------------------------------------------------------
-
-$(TCC_SOURCE)/configure:
-	@echo "TinyCC source is missing. Run 'make tcc-source' to fetch the pinned upstream revision."
-	@false
-
-tcc-source:
-	@if [ ! -x "$(TCC_SOURCE)/configure" ]; then \
-		git clone https://github.com/TinyCC/tinycc.git "$(TCC_SOURCE)" && \
-		git -C "$(TCC_SOURCE)" checkout --detach "$(TCC_SOURCE_REV)"; \
-	fi
-
-$(TCC_CONFIG_STAMP): $(TCC_SOURCE)/configure $(ROOT)/Makefile
-	@mkdir -p $(BUILD_DIR)/toolchain
-	cd $(TCC_SOURCE) && ./configure --prefix=/usr --tccdir=/usr/lib/tcc \
-		--sysincludepaths=/usr/include:/usr/include/x86_64-linux-gnu:$(shell $(CC) -print-file-name=include) \
-		--libpaths=/usr/lib:/usr/lib/x86_64-linux-gnu \
-		--crtprefix=/usr/lib/x86_64-linux-gnu:/usr/lib \
-		--config-bcheck=no --config-backtrace=no
-	touch $@
-
-$(TCC_PATCH_STAMP): $(ROOT)/userland/patches/tinycc-imagineos.patch $(TCC_SOURCE)/tccrun.c $(TCC_CONFIG_STAMP)
-	@if ! grep -Fq 'TCCSYM(gettimeofday)' $(TCC_SOURCE)/tccrun.c; then \
-		patch --forward -p1 -d $(TCC_SOURCE) < $<; \
-	fi
-	touch $@
-
-$(TCC_HOST): $(TCC_CONFIG_STAMP) $(TCC_PATCH_STAMP) $(TCC_SOURCE)/Makefile $(TCC_SOURCE)/tcc.c
-	@mkdir -p $(BUILD_DIR)/toolchain
-	$(MAKE) -C $(TCC_SOURCE)
-	cp $(TCC_SOURCE)/tcc $@
-
-$(TCC_SOURCE)/libtcc1.a: $(TCC_HOST)
-	@test -f $@
-
-$(TCC_SOURCE)/runmain.o: $(TCC_HOST)
-	@test -f $@
-
-$(BUILD_DIR)/user/tcc/%.o: $(TCC_SOURCE)/%.c $(TCC_HOST) $(TCC_PATCH_STAMP) \
-                            $(wildcard $(ROOT)/userland/libc/include/*.h $(ROOT)/userland/libc/include/sys/*.h)
-	@mkdir -p $(dir $@)
-	$(CC) $(TCC_NATIVE_CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/user/utilities/tcc: $(TCC_NATIVE_OBJECTS) $(USER_CRT_OBJECTS) $(ROOT)/userland/linker.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) -nostdlib -static -no-pie \
-		-Wl,-T,$(ROOT)/userland/linker.ld -Wl,--build-id=none \
-		$(TCC_NATIVE_OBJECTS) $(USER_CRT_OBJECTS) -o $@

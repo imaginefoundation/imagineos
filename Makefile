@@ -5,7 +5,7 @@
 # Este arquivo só orquestra. A lógica de cada etapa vive em build/:
 #
 #   build/common.mk    variáveis, ferramentas e artefatos compartilhados
-#   build/kernel.mk    kernel dreamcore, bootstrap.elf e dzImage
+#   build/kernel.mk    kernel dreamcore e dzImage
 #   build/userland.mk  apps/utilitários Rust, libc, runtime C e TinyCC
 #   build/ramfs.mk     árvore ramfs/ e empacotamento do initramfs.img
 #   build/iso.mk       ISO UEFI e execução no QEMU
@@ -28,7 +28,7 @@ USERLAND_MK := $(ROOT)/build/userland.mk
 RAMFS_MK    := $(ROOT)/build/ramfs.mk
 ISO_MK      := $(ROOT)/build/iso.mk
 
-.PHONY: all kernel bootstrap dzimage tools ramfs ramfs-image \
+.PHONY: all kernel dzimage tools ramfs ramfs-image \
         user-programs user-libs c-app tcc-source \
         iso run disk-image run-disk installer-disk run-installer clean
 
@@ -36,7 +36,7 @@ ISO_MK      := $(ROOT)/build/iso.mk
 # o ELF do kernel.
 all: kernel
 
-kernel bootstrap dzimage tools:
+kernel dzimage tools:
 	$(MAKE) -f $(KERNEL_MK) $@
 
 ramfs ramfs-image:

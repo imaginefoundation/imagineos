@@ -28,8 +28,9 @@ rodar `make iso` (o trecho de comandos acima já o cria). A imagem somente UEFI
 
 O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do Limine. Ele instala a GDT/TSS e uma IDT de exceções fatais, inicializa um alocador de frames de 4 KiB e um heap bump de 1 MiB, monta o arquivo USTAR e carrega `/sbin/init` como PID 1. O init inicia o `/sbin/getty`, que inicia o `/bin/shell`; o shell resolve comandos externos em `/bin`.
 
-O código-fonte do kernel fica em `kernel/src/`, o carregador do Limine em
-`bootstrap/` e os aplicativos de userspace em `userland/apps/`. O USTAR provê o
+O código-fonte do kernel fica em `kernel/src/` (o Limine carrega o dzImage, que
+é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
+`userland/apps/`. O USTAR provê o
 sistema de arquivos inicial em RAM e o fallback; quando existe uma partição DFS
 válida, sua árvore persistente é usada como raiz ativa. Ainda não há uma
 implementação genérica de `switch_root`.

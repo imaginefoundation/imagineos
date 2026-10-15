@@ -11,6 +11,7 @@ pub use imagineos::legacy::{
 /// # Safety
 /// `envp` deve apontar para o vetor de ambiente recebido em `_start` (o mesmo
 /// contrato de `imagineos::legacy::resolve_path`).
+#[allow(dead_code)]
 pub unsafe fn resolve_path(
     envp: *const *const u8,
     envc: usize,
