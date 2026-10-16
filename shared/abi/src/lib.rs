@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod def;
+
 pub const ABI_VERSION: u64 = 4;
 
 pub const SYS_WRITE: u64 = 1;

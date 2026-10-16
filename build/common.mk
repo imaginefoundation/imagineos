@@ -52,6 +52,7 @@ ISO_IMAGE      := $(DISTRO_DIR)/$(K_NAME)-$(shell date +%Y-%m-%d-%H-%M)-$(CODENA
 DISK_IMAGE     ?= $(BUILD_DIR)/imagineos-disk.img
 INSTALL_TARGET := $(BUILD_DIR)/installer-target.img
 DFS_IMAGE_BIN  := $(BUILD_DIR)/dfs-image
+DNU_PACK_BIN   := $(BUILD_DIR)/dnu-pack
 
 # Fontes de terceiros e recursos
 LIMINE_DIR      := $(ROOT)/third_party/limine

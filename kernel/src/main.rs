@@ -28,6 +28,8 @@ mod config;
 mod crypto;
 #[path = "fs/dfs.rs"]
 mod dfs;
+#[path = "exec/def.rs"]
+mod def;
 #[path = "exec/elf.rs"]
 mod elf;
 #[path = "console/framebuffer.rs"]
