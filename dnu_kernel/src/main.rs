@@ -27,11 +27,11 @@ use usr::config;
 #[path = "fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "exec/def.rs"]
-mod def;
+pub mod def;
 #[path = "exec/elf.rs"]
-mod elf;
-#[path = "console/framebuffer.rs"]
-mod framebuffer;
+pub mod elf;
+#[path = "console/mod.rs"]
+mod console;
 #[path = "arch/x86_64/fpu.rs"]
 mod fpu;
 #[path = "arch/x86_64/gdt.rs"]
@@ -45,7 +45,7 @@ mod idt;
 #[path = "fs/installer.rs"]
 mod installer;
 #[path = "console/kernel_log.rs"]
-mod kernel_log;
+pub mod kernel_log;
 #[path = "drivers/keyboard.rs"]
 mod keyboard;
 #[path = "drivers/mouse.rs"]
@@ -58,20 +58,31 @@ mod paging;
 mod permissions;
 #[path = "drivers/acpi.rs"]
 mod acpi;
-#[path = "exec/process.rs"]
-pub mod process;
+#[path = "exec/mod.rs"]
+pub mod exec;
+pub use exec::process;
 #[path = "fs/ramfs.rs"]
 mod ramfs;
 #[path = "dev/display/surface.rs"]
 mod surface;
 #[path = "fs/vfs.rs"]
 pub mod vfs;
-#[path = "abi/syscall.rs"]
-mod syscall;
+#[path = "abi/mod.rs"]
+mod abi;
 #[path = "drivers/time.rs"]
 mod time;
-#[path = "console/utf8.rs"]
-mod utf8;
+
+// Reexports dos submódulos de `console` que o resto do kernel referencia pelo
+// caminho curto (`crate::framebuffer`, `crate::utf8`).
+use console::framebuffer;
+use console::serial as uart;
+use console::utf8;
+// Helpers legados de log/diagnóstico mantêm o caminho curto `crate::
+// serial_write`, `crate::serial_write_number` e `crate::kernel_halt`.
+pub(crate) use console::serial::serial_write;
+#[cfg(feature = "kernel-debug")]
+pub(crate) use console::serial::write_number as serial_write_number;
+pub(crate) use crate::halt as kernel_halt;
 
 static LOG_LINE_START: AtomicBool = AtomicBool::new(true);
 static EMBEDDED_FONT: &[u8] = include_bytes!("../../common/tools/assets/zap-vga16.psf");
@@ -90,14 +101,14 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     }
     fpu::init();
 
-    serial_init();
+    uart::init();
     if boot_info.is_null() {
-        serial_write(b"KERNEL PANIC: Limine supplied no boot information\r\n");
+        uart::write(b"KERNEL PANIC: Limine supplied no boot information\r\n");
         halt();
     }
     let boot_info = unsafe { &*boot_info };
     time::init_with(boot_info.tsc_start, boot_info.tsc_frequency);
-    mask_legacy_pic();
+    boot::mask_legacy_pic();
     gdt::init();
     idt::init();
 
@@ -108,7 +119,7 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     );
     let Some(boot_frame) = memory::allocate_frame() else {
         console_write("No usable physical frames\n");
-        halt();
+        crate::halt();
     };
     unsafe {
         core::ptr::write_bytes(boot_frame.virtual_address, 0, 4096);
@@ -126,60 +137,76 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     }
     mouse::init();
     console_write("ImagineOS Astrid w/ Dreamcore Kernel\n");
+    report_boot_frames(frame_count, &boot_frame);
+    acpi::init(boot_info.rsdp_address, boot_info.hhdm_offset);
+
+    // Referência única aos globais de I/O da ABI: mantê-los vivos mesmo quando
+    // nenhuma syscall é compilada no binário (builds mínimos/testes).
+    abi::anchor_runtime_state();
+    let disk_ready = probe_storage();
+    mount_root_filesystems(boot_info, disk_ready);
+    start_init()
+}
+
+/// Anuncia o estado do alocador depois que o framebuffer está pronto.
+fn report_boot_frames(frame_count: usize, boot_frame: &memory::Frame) {
     console_write("Frame allocator ready; usable frames: ");
     console_number(frame_count.saturating_sub(1) as u64);
     console_write(";\nreserved boot frame at physical 0x");
     console_hex(boot_frame.physical_address);
     console_write("\n");
-    acpi::init(boot_info.rsdp_address, boot_info.hhdm_offset);
+}
 
-    let disk_ready = match ata::init() {
-        Ok(sectors) => {
-            console_write("ATA primary master ready; sectors: ");
-            console_number(sectors);
-            console_write("\n");
-            match gpt::Gpt::read_primary(&ata::PrimaryMaster) {
-                Ok(table) => {
-                    match table.find_partition(&ata::PrimaryMaster, &gpt::DFS_PARTITION_TYPE_GUID) {
-                        Ok(partition) => {
-                            console_write("GPT DFS partition found at LBA ");
-                            console_number(partition.first_lba);
-                            console_write("\n");
-                        }
-                        Err(gpt::GptError::PartitionNotFound) => {
-                            console_write("GPT detected; no DFS partition found\n");
-                        }
-                        Err(_) => console_write("GPT DFS partition lookup failed\n"),
-                    }
-                }
-                Err(gpt::GptError::InvalidSignature) => {
-                    console_write("ATA disk has no primary GPT\n");
-                }
-                Err(_) => console_write("ATA disk GPT is invalid or unreadable\n"),
-            }
-            true
-        }
+/// Inicializa o disco ATA primário e relata o estado da tabela GPT.
+///
+/// Devolve `true` quando há um disco utilizável — o RAMFS usa isso para expor
+/// `/dev/hda`.
+fn probe_storage() -> bool {
+    let sectors = match ata::init() {
+        Ok(sectors) => sectors,
         Err(_) => {
             console_write("No usable ATA primary-master disk; continuing without storage\n");
-            false
+            return false;
         }
     };
+    console_write("ATA primary master ready; sectors: ");
+    console_number(sectors);
+    console_write("\n");
+    report_dfs_partition();
+    true
+}
 
-    let ramfs_image: Option<&'static [u8]> = (!boot_info.modules.is_null())
-        .then(|| unsafe { &*boot_info.modules })
-        .and_then(|response| {
-            response
-                .modules()
-                .iter()
-                .find(|module| module.path().to_bytes().ends_with(b"initramfs.img"))
-        })
-        .map(|module| unsafe {
-            core::slice::from_raw_parts(module.addr(), module.size() as usize)
-        });
+fn report_dfs_partition() {
+    let table = match gpt::Gpt::read_primary(&ata::PrimaryMaster) {
+        Ok(table) => table,
+        Err(gpt::GptError::InvalidSignature) => {
+            console_write("ATA disk has no primary GPT\n");
+            return;
+        }
+        Err(_) => {
+            console_write("ATA disk GPT is invalid or unreadable\n");
+            return;
+        }
+    };
+    match table.find_partition(&ata::PrimaryMaster, &gpt::DFS_PARTITION_TYPE_GUID) {
+        Ok(partition) => {
+            console_write("GPT DFS partition found at LBA ");
+            console_number(partition.first_lba);
+            console_write("\n");
+        }
+        Err(gpt::GptError::PartitionNotFound) => {
+            console_write("GPT detected; no DFS partition found\n");
+        }
+        Err(_) => console_write("GPT DFS partition lookup failed\n"),
+    }
+}
 
-    let Some(ramfs_image) = ramfs_image else {
+/// Monta o RAMFS do `initramfs.img` e, se houver, o DFS persistente por cima.
+/// Aplica também a configuração global e a fonte PSF da raiz ativa.
+fn mount_root_filesystems(boot_info: &boot_info::BootInfo, disk_ready: bool) {
+    let Some(ramfs_image) = embedded_initramfs(boot_info) else {
         console_write("initramfs.img missing; stopping safely\n");
-        halt();
+        crate::halt();
     };
     ramfs::mount(ramfs_image);
     ramfs::set_block_disk_present(disk_ready);
@@ -188,6 +215,26 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
         Ok(None) => console_write("No DFS partition; continuing with RAMFS root\n"),
         Err(_) => console_write("DFS mount or journal recovery failed; using RAMFS root\n"),
     }
+    load_global_config();
+    load_font();
+}
+
+/// Localiza o módulo `initramfs.img` carregado pelo Limine.
+fn embedded_initramfs(boot_info: &boot_info::BootInfo) -> Option<&'static [u8]> {
+    if boot_info.modules.is_null() {
+        return None;
+    }
+    let response = unsafe { &*boot_info.modules };
+    response
+        .modules()
+        .iter()
+        .find(|module| module.path().to_bytes().ends_with(b"initramfs.img"))
+        .map(|module| unsafe {
+            core::slice::from_raw_parts(module.addr(), module.size() as usize)
+        })
+}
+
+fn load_global_config() {
     if let Some(settings) = ramfs::read(config::GLOBAL_CONFIG_PATH) {
         if config::load(settings).is_err() {
             console_write("Global configuration invalid; using defaults\n");
@@ -195,6 +242,9 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     } else {
         console_write("Global configuration missing; using defaults\n");
     }
+}
+
+fn load_font() {
     if let Some(font) = ramfs::find_font() {
         if !framebuffer::load_font(font) {
             console_write("RAMFS PSF invalid; retaining embedded zap-vga32.psf\n");
@@ -202,13 +252,17 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     } else {
         console_write("RAMFS PSF not found; retaining embedded zap-vga32.psf\n");
     }
+}
+
+/// Carrega `/sbin/init` como PID 1 e entra em ring 3.
+fn start_init() -> ! {
     let Some(init_program) = ramfs::read("/sbin/init") else {
         kernel_panic("required /sbin/init not found in the active root filesystem\n");
     };
     console_write("Loading /sbin/init as PID 1 in ring 3\n");
     if process::init(&[(init_program, 1)]).is_err() {
         console_write("ELF loader failed; stopping safely\n");
-        halt();
+        crate::halt();
     }
     time::configure_timer_interrupt();
     console_write("Timer configured; preemption activates on the first ring-3 entry\n");
@@ -225,7 +279,6 @@ pub(crate) fn console_write(text: &str) {
             let mut timestamp = [0; 32];
             let timestamp = time::format_elapsed(&mut timestamp);
             kernel_log::append(timestamp);
-            serial_write(timestamp);
             framebuffer::write_utf8(timestamp);
         }
         let length = remaining
@@ -233,8 +286,8 @@ pub(crate) fn console_write(text: &str) {
             .position(|byte| *byte == b'\n')
             .map_or(remaining.len(), |newline| newline + 1);
         let line = &remaining[..length];
+        // `append` já espelha os bytes na serial.
         kernel_log::append(line);
-        serial_write(line);
         framebuffer::write_utf8(line);
         if line.last() == Some(&b'\n') {
             LOG_LINE_START.store(true, Ordering::Relaxed);
@@ -244,20 +297,20 @@ pub(crate) fn console_write(text: &str) {
 }
 
 pub(crate) fn console_write_bytes(bytes: &[u8]) {
-    serial_write(bytes);
+    uart::write(bytes);
     framebuffer::write_ansi(bytes);
 }
 
 pub(crate) fn serial_log_timestamp() {
     let mut timestamp = [0; 32];
-    serial_write(time::format_elapsed(&mut timestamp));
+    uart::write(time::format_elapsed(&mut timestamp));
 }
 
 fn console_number(mut value: u64) {
     let mut digits = [0u8; 20];
     let mut cursor = digits.len();
     if value == 0 {
-        serial_write(b"0");
+        uart::write(b"0");
         framebuffer::write_char('0');
         return;
     }
@@ -266,15 +319,7 @@ fn console_number(mut value: u64) {
         digits[cursor] = b'0' + (value % 10) as u8;
         value /= 10;
     }
-    serial_write(&digits[cursor..]);
-    if let Ok(text) = core::str::from_utf8(&digits[cursor..]) {
-        framebuffer::write_str(text);
-    }
-}
-
-#[cfg(feature = "kernel-debug")]
-pub(crate) fn console_write_number(value: u64) {
-    console_number(value);
+    write_to_console(&digits[cursor..]);
 }
 
 fn console_hex(mut value: u64) {
@@ -294,110 +339,31 @@ fn console_hex(mut value: u64) {
         cursor -= 1;
         digits[cursor] = b'0';
     }
-    serial_write(&digits[cursor..]);
-    if let Ok(text) = core::str::from_utf8(&digits[cursor..]) {
-        framebuffer::write_str(text);
-    }
-}
-
-fn serial_init() {
-    unsafe {
-        out(0x3f9, 0x00);
-        out(0x3fb, 0x80);
-        out(0x3f8, 0x03);
-        out(0x3f9, 0x00);
-        out(0x3fb, 0x03);
-        out(0x3fa, 0xc7);
-        out(0x3fc, 0x0b);
-    }
-}
-
-fn mask_legacy_pic() {
-    unsafe {
-        out(0x21, 0xff);
-        out(0xa1, 0xff);
-    }
-}
-
-/// Escreve um número hexadecimal na serial (diagnóstico).
-#[cfg(feature = "kernel-debug")]
-#[allow(dead_code)]
-pub(crate) fn serial_write_hex(mut value: u64) {
-    if value == 0 {
-        serial_write(b"0");
-        return;
-    }
-    let mut digits = [0u8; 16];
-    let mut cursor = digits.len();
-    while value != 0 {
-        cursor -= 1;
-        let digit = (value & 0xf) as u8;
-        digits[cursor] = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'a' + digit - 10
-        };
-        value >>= 4;
-    }
-    serial_write(&digits[cursor..]);
+    write_to_console(&digits[cursor..]);
 }
 
 #[cfg(feature = "kernel-debug")]
-pub(crate) fn serial_write_number(mut value: u64) {
-    let mut digits = [0u8; 20];
-    let mut cursor = digits.len();
-    if value == 0 {
-        serial_write(b"0");
-        return;
-    }
-    while value != 0 {
-        cursor -= 1;
-        digits[cursor] = b'0' + (value % 10) as u8;
-        value /= 10;
-    }
-    serial_write(&digits[cursor..]);
+pub(crate) fn console_write_number(value: u64) {
+    console_number(value);
 }
 
-pub(crate) fn serial_write(bytes: &[u8]) {
-    let mut previous_was_cr = false;
-    for &byte in bytes {
-        if byte == b'\n' && !previous_was_cr {
-            serial_write_byte(b'\r');
-        }
-        serial_write_byte(byte);
-        previous_was_cr = byte == b'\r';
-    }
+/// Espelha dígitos ASCII (decimais/hex) no log, na serial e no framebuffer.
+fn write_to_console(digits: &[u8]) {
+    // `append` já espelha na serial.
+    kernel_log::append(digits);
+    framebuffer::write_utf8(digits);
 }
 
-fn serial_write_byte(byte: u8) {
-    unsafe {
-        while in_port(0x3fd) & 0x20 == 0 {
-            asm!("pause", options(nomem, nostack, preserves_flags));
-        }
-        out(0x3f8, byte);
-    }
-}
-
-unsafe fn out(port: u16, value: u8) {
-    asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-}
-
-unsafe fn in_port(port: u16) -> u8 {
-    let value: u8;
-    asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-    value
-}
-
-fn halt() -> ! {
+/// Para a CPU para sempre com interrupções desabilitadas.
+///
+/// Público dentro da crate porque o escalonador e o boot o usam quando não há
+/// mais nada a executar.
+pub(crate) fn halt() -> ! {
     loop {
         unsafe {
             asm!("hlt", options(nomem, nostack));
         }
     }
-}
-
-pub(crate) fn kernel_halt() -> ! {
-    halt()
 }
 
 fn kernel_panic(message: &str) -> ! {

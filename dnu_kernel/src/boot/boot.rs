@@ -4,6 +4,7 @@
 //! (`dzImage` na verdade é o kernel ELF) diretamente na RAM e salta para
 //! `_start`. Aqui montamos o `BootInfo` que o resto do kernel espera.
 
+use core::arch::asm;
 use core::mem::MaybeUninit;
 use core::ptr;
 
@@ -39,6 +40,21 @@ static EMPTY_RESERVED: [PhysicalRange; 1] = [PhysicalRange::EMPTY];
 struct BootInfoStorage(core::cell::UnsafeCell<MaybeUninit<BootInfo>>);
 unsafe impl Sync for BootInfoStorage {}
 static BOOT_INFO: BootInfoStorage = BootInfoStorage(core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+
+/// Mascara todas as linhas dos dois PICs 8259 herdados.
+///
+/// O kernel usa APIC/timer e não tem handlers para IRQ legadas; deixá-las
+/// desmascaradas faria uma interrupção espúria cair em vetores sem stub.
+pub fn mask_legacy_pic() {
+    unsafe {
+        out(0x21, 0xff);
+        out(0xa1, 0xff);
+    }
+}
+
+unsafe fn out(port: u16, value: u8) {
+    asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
+}
 
 /// Coleta as respostas do Limine e transfere o controle para `kernel_entry`.
 pub fn limine_start() -> ! {

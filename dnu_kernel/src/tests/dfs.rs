@@ -2,7 +2,7 @@
 
 #[path = "../drivers/block.rs"]
 mod block;
-#[path = "../fs/dfs.rs"]
+#[path = "../fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "../fs/gpt.rs"]
 mod gpt;

@@ -4,11 +4,47 @@
 //! The module list below mirrors what `dnu_kernel/src/main.rs` wires together, so the
 //! routing exercised here is the real one. Keeping this compilable also guards
 //! the RAMFS tests that used to fail to build when run standalone.
+//!
+//! Execute com:
+//! `rustup run stable rustc --edition 2021 --test dnu_kernel/src/tests/vfs.rs -o /tmp/vfs-tests && /tmp/vfs-tests`
 
-#[path = "../drivers/ata.rs"]
-mod ata;
+mod ata {
+    use crate::block::{BlockDevice, BlockError, SECTOR_SIZE};
+
+    pub struct PrimaryMaster;
+
+    /// O VFS consulta a presença do disco pelo número de setores.
+    pub fn sector_count() -> u64 {
+        0
+    }
+
+    impl BlockDevice for PrimaryMaster {
+        fn sector_count(&self) -> u64 {
+            0
+        }
+
+        fn read_sector(
+            &self,
+            _lba: u64,
+            _buffer: &mut [u8; SECTOR_SIZE],
+        ) -> Result<(), BlockError> {
+            Err(BlockError::NotReady)
+        }
+
+        fn write_sector(&self, _lba: u64, _buffer: &[u8; SECTOR_SIZE]) -> Result<(), BlockError> {
+            Err(BlockError::NotReady)
+        }
+
+        fn flush(&self) -> Result<(), BlockError> {
+            Err(BlockError::NotReady)
+        }
+    }
+}
+
 #[path = "../drivers/block.rs"]
 mod block;
+// `dfs::mount_primary` consulta o disco primário por `ata::sector_count`, que
+// o `ata` de teste precisa expor mesmo sem I/O real.
 #[path = "../fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "../fs/gpt.rs"]

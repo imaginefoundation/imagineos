@@ -5,7 +5,7 @@
 //! which asks the scheduler for a possible context switch and returns the frame
 //! to resume on top of the `iretq` instruction.
 
-use crate::syscall::TrapFrame;
+use crate::abi::trap::TrapFrame;
 
 /// Handles one timer tick.
 ///

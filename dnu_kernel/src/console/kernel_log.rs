@@ -1,3 +1,8 @@
+//! Log circular do kernel (`dmesg`): 4 KiB, sobrescrevendo o mais antigo.
+//!
+//! Toda saída passa por `append`, que também espelha os bytes na serial para
+//! diagnóstico no QEMU.
+
 use core::cell::UnsafeCell;
 
 pub const CAPACITY: usize = 4096;
@@ -41,10 +46,12 @@ impl LogBuffer {
     }
 }
 
-struct SharedLog(UnsafeCell<LogBuffer>);
+/// Log global do kernel; só o console (single-core, sem preempção dentro de
+/// `append`) o acessa, então não há lock.
+pub struct SharedLog(UnsafeCell<LogBuffer>);
 unsafe impl Sync for SharedLog {}
 
-static KERNEL_LOG: SharedLog = SharedLog(UnsafeCell::new(LogBuffer::new()));
+pub static KERNEL_LOG: SharedLog = SharedLog(UnsafeCell::new(LogBuffer::new()));
 
 pub fn append(bytes: &[u8]) {
     unsafe { (*KERNEL_LOG.0.get()).append(bytes) };

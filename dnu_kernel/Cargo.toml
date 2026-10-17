@@ -3,4 +3,8 @@ name = "imagineos-dnu-kernel"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Ativa logs de diagnóstico extras (processo, serial numérica, ramfs).
+kernel-debug = []
+
 [dependencies]
