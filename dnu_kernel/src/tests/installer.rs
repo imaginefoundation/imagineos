@@ -9,11 +9,20 @@ extern crate imagineos_abi;
 
 #[path = "../drivers/block.rs"]
 mod block;
-#[path = "../crypto.rs"]
-mod crypto;
-#[path = "../accounts.rs"]
-mod accounts;
-#[path = "../fs/dfs.rs"]
+
+// `installer.rs` alcança `crate::usr::accounts` (que usa `crate::usr::crypto`).
+// Os módulos reais são declarados com `#[path]` relativo a este arquivo e
+// reexportados sob `usr`, o mesmo caminho que o kernel usa em produção.
+#[path = "../usr/accounts.rs"]
+pub mod accounts_impl;
+#[path = "../usr/crypto.rs"]
+pub mod crypto_impl;
+pub mod usr {
+    pub use super::accounts_impl as accounts;
+    pub use super::crypto_impl as crypto;
+}
+
+#[path = "../fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "../fs/gpt.rs"]
 mod gpt;

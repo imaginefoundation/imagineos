@@ -1,4 +1,4 @@
-# Imagine Operating System
+# Imagine Operating System (astrid-alpha1-v0.2.1)
 
 O ImagineOS é um sistema operacional x86_64 experimental e educacional, de codinome **Astrid**. O kernel é Rust freestanding e usa o protocolo de boot do Limine. Este é um estágio inicial de bring-up, ainda não é um sistema operacional de uso geral.
 
@@ -28,7 +28,7 @@ rodar `make iso` (o trecho de comandos acima já o cria). A imagem somente UEFI
 
 O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do Limine. Ele instala a GDT/TSS e uma IDT de exceções fatais, inicializa um alocador de frames de 4 KiB e um heap bump de 1 MiB, monta o arquivo USTAR e carrega `/sbin/init` como PID 1. O init inicia o `/sbin/getty`, que inicia o `/bin/shell`; o shell resolve comandos externos em `/bin`.
 
-O código-fonte do kernel fica em `kernel/src/` (o Limine carrega o dzImage, que
+O código-fonte do kernel fica em `dnu_kernel/src/` (o Limine carrega o dzImage, que
 é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
 `common/programs/` (apps multi-módulo) e `common/utilities/` (comandos de
 arquivo único). O USTAR provê o
@@ -50,8 +50,8 @@ de gerenciamento de senhas.
 > persistente. Mantenha essas imagens em máquinas isoladas e offline até que um
 > mecanismo persistente de gerenciamento de senhas substitua o padrão embutido
 > no caminho de autenticação do getty (o handler de login do getty em
-> `kernel/src/`, que hoje compara a senha digitada com o par `root`/`root`
-> embutido no código).
+> `common/programs/login/`, que hoje compara a senha digitada com o par
+> `root`/`root` embutido no código).
 
 O shell é propositalmente pequeno. Suas capacidades são:
 
@@ -71,8 +71,8 @@ O shell é propositalmente pequeno. Suas capacidades são:
 O `std` do Rust é desnecessário: o kernel permanece `no_std` e expõe operações de sistema por meio de suas próprias syscalls. A base USTAR é imutável; `mkdir`, `touch` e `rm` atualizam uma camada em memória de tamanho limitado, e as mudanças desaparecem ao reiniciar. O escalonamento é cooperativo round-robin; preempção por timer, recuperação de heap e permissões completas de W^X também estão pendentes.
 
 Programas Rust de usuário podem usar o crate `no_std` reutilizável em
-`userland/api/`. Os números de syscall e as estruturas de dados compartilhadas
-ficam em `shared/abi/`; a ABI v2 e suas convenções de erro e argumentos estão
+`common/userland/api/`. Os números de syscall e as estruturas de dados compartilhadas
+ficam em `common/shared/abi/`; a ABI v2 e suas convenções de erro e argumentos estão
 documentadas em
 [documentation/syscall-abi.md](documentation/syscall-abi.md). Essa API de
 userspace é específica do ImagineOS e não oferece `std` do Rust nem

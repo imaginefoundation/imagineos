@@ -257,7 +257,7 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
                     frame_ref.rax = (-14i64) as u64;
                     return frame;
                 }
-                if let Err(()) = crate::accounts::validate_install_config(&install_config) {
+                if let Err(()) = crate::usr::accounts::validate_install_config(&install_config) {
                     frame_ref.rax = (-22i64) as u64;
                     return frame;
                 }
@@ -551,8 +551,8 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
                 frame_ref.rax = (-14i64) as u64;
                 return frame;
             }
-            if crate::config::is_global_config_path(path)
-                && crate::config::validate(&contents[..length]).is_err()
+            if crate::usr::config::is_global_config_path(path)
+                && crate::usr::config::validate(&contents[..length]).is_err()
             {
                 frame_ref.rax = (-22i64) as u64;
                 return frame;
@@ -560,8 +560,8 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
             let (uid, gid, _) = process::current_credentials();
             match crate::ramfs::write_file_as(path, &contents[..length], uid, gid) {
                 Ok(()) => {
-                    if crate::config::is_global_config_path(path) {
-                        let _ = crate::config::load(&contents[..length]);
+                    if crate::usr::config::is_global_config_path(path) {
+                        let _ = crate::usr::config::load(&contents[..length]);
                     }
                     frame_ref.rax = length as u64;
                 }
@@ -1218,7 +1218,7 @@ fn spawn_with_io(frame: &mut TrapFrame) -> *mut TrapFrame {
         frame.rax = (-22i64) as u64;
         return frame;
     };
-    // Layout dos argumentos de `SYS_SPAWN` na ABI (ver `userland/api`):
+    // Layout dos argumentos de `SYS_SPAWN` na ABI (ver `common/userland/api`):
     //
     //   rdi = ponteiro do caminho      rsi = comprimento do caminho
     //   rdx = ponteiro dos argumentos  r10 = quantidade de argumentos

@@ -46,5 +46,5 @@ mod framebuffer {
     pub fn set_active(_active: bool) {}
 }
 
-#[path = "../power.rs"]
+#[path = "../drivers/acpi.rs"]
 mod power;

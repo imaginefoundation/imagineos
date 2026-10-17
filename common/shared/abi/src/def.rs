@@ -175,7 +175,7 @@ impl DefCapability {
 /// Um segmento carregável, como fica descrito na tabela do DEF.
 ///
 /// Esta é a visão *em memória* de uma entrada da tabela; o loader do kernel
-/// preenche essa estrutura a partir dos bytes crus (ver `kernel/src/exec/def.rs`).
+/// preenche essa estrutura a partir dos bytes crus (ver `dnu_kernel/src/exec/def.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DefSegment {
     pub file_offset: u64,
@@ -424,5 +424,5 @@ fn read_u64(image: &[u8], offset: usize) -> u64 {
 }
 
 // As invariantes de layout do DEF (`size_of`, alinhamento e magic) são
-// verificadas no binário `tools/dnu-pack.rs`, que é um programa de host com
-// harness de teste, e na suíte `kernel/src/tests/`, que roda sob `cargo test`.
+// verificadas no binário `common/tools/dnu-pack.rs`, que é um programa de host com
+// harness de teste, e na suíte `dnu_kernel/src/tests/`, que roda sob `cargo test`.

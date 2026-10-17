@@ -8,12 +8,12 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-mod accounts;
+mod usr;
 #[path = "arch/mod.rs"]
 mod arch;
-#[path = "ipc.rs"]
+#[path = "ipc/ipc.rs"]
 mod ipc;
-#[path = "input.rs"]
+#[path = "io/input.rs"]
 mod input;
 #[path = "drivers/ata.rs"]
 pub mod ata;
@@ -23,10 +23,8 @@ pub mod block;
 mod boot;
 #[path = "boot/boot_info.rs"]
 mod boot_info;
-#[path = "config.rs"]
-mod config;
-mod crypto;
-#[path = "fs/dfs.rs"]
+use usr::config;
+#[path = "fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "exec/def.rs"]
 mod def;
@@ -46,7 +44,7 @@ mod heap;
 mod idt;
 #[path = "fs/installer.rs"]
 mod installer;
-#[path = "kernel_log.rs"]
+#[path = "console/kernel_log.rs"]
 mod kernel_log;
 #[path = "drivers/keyboard.rs"]
 mod keyboard;
@@ -58,25 +56,25 @@ pub mod memory;
 mod paging;
 #[path = "fs/permissions.rs"]
 mod permissions;
-#[path = "power.rs"]
+#[path = "drivers/acpi.rs"]
 mod acpi;
 #[path = "exec/process.rs"]
 pub mod process;
 #[path = "fs/ramfs.rs"]
 mod ramfs;
-#[path = "surface.rs"]
+#[path = "dev/display/surface.rs"]
 mod surface;
 #[path = "fs/vfs.rs"]
 pub mod vfs;
 #[path = "abi/syscall.rs"]
 mod syscall;
-#[path = "time.rs"]
+#[path = "drivers/time.rs"]
 mod time;
 #[path = "console/utf8.rs"]
 mod utf8;
 
 static LOG_LINE_START: AtomicBool = AtomicBool::new(true);
-static EMBEDDED_FONT: &[u8] = include_bytes!("../../tools/assets/zap-vga16.psf");
+static EMBEDDED_FONT: &[u8] = include_bytes!("../../common/tools/assets/zap-vga16.psf");
 
 /// Ponto de entrada ELF visto pelo Limine. O módulo `boot` coleta as respostas
 /// das requisições do protocolo Limine, monta o `BootInfo` e chama `kernel_entry`.

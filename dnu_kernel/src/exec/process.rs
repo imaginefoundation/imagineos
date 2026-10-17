@@ -1677,7 +1677,7 @@ pub fn authenticate_current(username: &[u8], password: &[u8], target_uid: u32) -
     let is_self = username == &current.username[..current.username_length];
     if target_uid == 0 && is_self && current.uid != 0 {
         // sudo authenticates the caller, then elevates only an explicitly enabled account.
-        if !current.is_admin || crate::accounts::authenticate(username, password).is_none() {
+        if !current.is_admin || crate::usr::accounts::authenticate(username, password).is_none() {
             return -1;
         }
         current.uid = 0;
@@ -1688,7 +1688,7 @@ pub fn authenticate_current(username: &[u8], password: &[u8], target_uid: u32) -
         current.username_length = 4;
         return 0;
     }
-    let Some(account) = crate::accounts::authenticate(username, password) else {
+    let Some(account) = crate::usr::accounts::authenticate(username, password) else {
         return -1;
     };
     if target_uid != u32::MAX && account.uid != target_uid {

@@ -110,12 +110,12 @@ fn install_configured(
     account_config: Option<&imagineos_abi::InstallConfig>,
 ) -> Result<(), InstallError> {
     if let Some(config) = account_config {
-        crate::accounts::validate_install_config(config)
+        crate::usr::accounts::validate_install_config(config)
             .map_err(|_| InstallError::InvalidAccountConfig)?;
     }
     let account_database = match account_config {
         Some(config) if config.add_user != 0 => Some(
-            crate::accounts::make_database(config).map_err(|_| InstallError::EntropyUnavailable)?,
+            crate::usr::accounts::make_database(config).map_err(|_| InstallError::EntropyUnavailable)?,
         ),
         _ => None,
     };
@@ -206,7 +206,7 @@ fn install_configured(
             Ok(()) | Err(super::dfs::DfsError::AlreadyExists) => {}
             Err(_) => return Err(InstallError::DfsFormat),
         }
-        let hostname = crate::accounts::hostname(config);
+        let hostname = crate::usr::accounts::hostname(config);
         dfs.write_file(device, "etc/hostname", 0, hostname, true, 0o644, 0, 0)
             .map_err(|_| InstallError::DfsFormat)?;
         if let Some(database) = account_database {

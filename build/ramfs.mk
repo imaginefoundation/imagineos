@@ -64,11 +64,10 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	cp $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/ramfs/usr/lib/crt1.o
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crti.o
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crtn.o
-	cp $(ROOT)/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
+	cp $(ROOT)/common/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
 	# Binários userland
 	cp $(BUILD_DIR)/user/sbin/init $(BUILD_DIR)/ramfs/sbin/init
 	cp $(BUILD_DIR)/user/sbin/getty $(BUILD_DIR)/ramfs/sbin/getty
-	cp $(BUILD_DIR)/user/sbin/horust $(BUILD_DIR)/ramfs/sbin/horust
 	cp $(BUILD_DIR)/user/bin/shell $(BUILD_DIR)/ramfs/bin/shell
 	for utility in $(USER_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
@@ -84,10 +83,15 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	# com `themeConfig.json` (nome, autor, versão, descrição, compositor) e o
 	# CSS `window/windowTheme.css`. O WM olha para system/themes/current.tpf,
 	# com fallback classic.tpf; as fontes do tema ficam em ramfs/system/themes/classic.
+	# Sem as fontes do tema, o WM usa o tema embutido — não é erro de build.
 	mkdir -p $(BUILD_DIR)/ramfs/system/themes
-	tar --format=ustar -C $(RAMFS_ROOT)/system/themes/classic \
-		--exclude='*cursor*' -cf $(BUILD_DIR)/ramfs/system/themes/classic.tpf themeConfig.json window
-	cp $(BUILD_DIR)/ramfs/system/themes/classic.tpf $(BUILD_DIR)/ramfs/system/themes/current.tpf
+	if [ -f $(RAMFS_ROOT)/system/themes/classic/themeConfig.json ]; then \
+		tar --format=ustar -C $(RAMFS_ROOT)/system/themes/classic \
+			--exclude='*cursor*' -cf $(BUILD_DIR)/ramfs/system/themes/classic.tpf themeConfig.json window; \
+		cp $(BUILD_DIR)/ramfs/system/themes/classic.tpf $(BUILD_DIR)/ramfs/system/themes/current.tpf; \
+	else \
+		echo "temas: fontes em ramfs/system/themes/classic ausentes; WM usara o tema embutido"; \
+	fi
 
 	# Tar para o instalador do SO
 	tar --format=ustar --numeric-owner --owner=0 --group=0 \

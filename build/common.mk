@@ -43,7 +43,7 @@ AR             ?= ar
 # ==============================================================================
 BUILD_DIR      := $(ROOT)/.build
 DISTRO_DIR     := $(BUILD_DIR)/distro
-KERNEL         := $(ROOT)/target/$(TARGET)/release/dreamcore
+KERNEL         := $(ROOT)/target/$(TARGET)/release/imagineos-dnu-kernel
 DZ_IMAGE       := $(BUILD_DIR)/dzImage
 RAMFS_IMAGE    := $(BUILD_DIR)/initramfs.tar
 RAMFS_INST_IMG := $(BUILD_DIR)/initramfs-installed.tar
@@ -56,7 +56,7 @@ DNU_PACK_BIN   := $(BUILD_DIR)/dnu-pack
 
 # Fontes de terceiros e recursos
 LIMINE_DIR      := $(ROOT)/third_party/limine
-FONT_ASSET      := $(ROOT)/tools/assets/zap-vga16.psf
+FONT_ASSET      := $(ROOT)/common/tools/assets/zap-vga16.psf
 
 # ==============================================================================
 # RAMFS E PROGRAMAS DE USUÁRIO
@@ -68,30 +68,29 @@ RAMFS_DIRS     := bin dev etc sbin home system/fonts system/install tmp usr
 USER_UTILITIES   := cat dmesg distroinstall fdtest forktest globalconf grep kill ls mkdir ps rm shutdown su sudo touch uname vi hello
 USER_C_UTILITIES := hello_c
 
-# Cabeçalhos e fontes da libc de userspace (userland/libraries/libc).
-USER_LIBC_DIR   := $(ROOT)/userland/libraries/libc
+# Cabeçalhos e fontes da libc de userspace (common/userland/libraries/libc).
+USER_LIBC_DIR   := $(ROOT)/common/userland/libraries/libc
 USER_LIBC_INC   := $(USER_LIBC_DIR)/include
 
 # Manifestos e libs do userland
-USER_API_MANIFEST       := $(ROOT)/userland/api/Cargo.toml
+USER_API_MANIFEST       := $(ROOT)/common/userland/api/Cargo.toml
 USER_API_TARGET_DIR     := $(BUILD_DIR)/user/api-target
 USER_API_RLIB           := $(USER_API_TARGET_DIR)/$(TARGET)/release/libimagineos.rlib
 USER_API_DEPS           := $(USER_API_TARGET_DIR)/$(TARGET)/release/deps
-USER_RUNTIME_MANIFEST   := $(ROOT)/userland/runtimes/ImagineRustRuntime/Cargo.toml
+USER_RUNTIME_MANIFEST   := $(ROOT)/common/userland/runtimes/ImagineRustRuntime/Cargo.toml
 USER_RUNTIME_TARGET_DIR := $(BUILD_DIR)/user/runtime-target
 USER_RUNTIME_RLIB       := $(USER_RUNTIME_TARGET_DIR)/$(TARGET)/release/libimagineos_rt.rlib
 USER_RUNTIME_DEPS       := $(USER_RUNTIME_TARGET_DIR)/$(TARGET)/release/deps
 
 # Runtime de programas em C, implementada em Rust
-# (userland/runtimes/ImagineCRuntime).
+# (common/userland/runtimes/ImagineCRuntime).
 # Produz um único objeto com _start, c_runtime_init, setjmp/longjmp e o
 # restaurador de sinais, substituindo os antigos crt0.S/crt0.c/signal.S/setjmp.S.
-USER_CRT_MANIFEST       := $(ROOT)/userland/runtimes/ImagineCRuntime/Cargo.toml
+USER_CRT_MANIFEST       := $(ROOT)/common/userland/runtimes/ImagineCRuntime/Cargo.toml
 USER_CRT_TARGET_DIR     := $(BUILD_DIR)/user/crt-target
 USER_CRT_RLIB           := $(BUILD_DIR)/user/libimagineos_crt.a
 USER_PROGRAMS           := $(BUILD_DIR)/user/sbin/init \
                            $(BUILD_DIR)/user/sbin/getty \
-                           $(BUILD_DIR)/user/sbin/horust \
                            $(BUILD_DIR)/user/bin/shell \
                            $(BUILD_DIR)/user/bin/liminal-client \
                            $(BUILD_DIR)/user/bin/liminal-server \

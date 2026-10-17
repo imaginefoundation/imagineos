@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! Integration test for the VFS facade over the RAMFS/overlay backend.
 //!
-//! The module list below mirrors what `kernel/src/main.rs` wires together, so the
+//! The module list below mirrors what `dnu_kernel/src/main.rs` wires together, so the
 //! routing exercised here is the real one. Keeping this compilable also guards
 //! the RAMFS tests that used to fail to build when run standalone.
 
@@ -9,7 +9,7 @@
 mod ata;
 #[path = "../drivers/block.rs"]
 mod block;
-#[path = "../fs/dfs.rs"]
+#[path = "../fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "../fs/gpt.rs"]
 mod gpt;
@@ -18,8 +18,13 @@ mod ramfs;
 #[path = "../fs/vfs.rs"]
 mod vfs;
 
-#[path = "../config.rs"]
-mod config;
+// `ramfs`/`vfs` resolvem a configuração por `crate::usr::config`. O módulo real
+// é declarado com `#[path]` relativo a este arquivo e reexportado sob `usr`.
+#[path = "../usr/config.rs"]
+pub mod config_impl;
+pub mod usr {
+    pub use super::config_impl as config;
+}
 
 use vfs::{FileSystem, Vfs};
 

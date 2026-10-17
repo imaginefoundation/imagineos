@@ -86,7 +86,7 @@ disk-image: iso
 	@if [ -e "$(DISK_IMAGE)" ]; then \
 		printf 'Usando imagem de disco existente: %s\n' "$(DISK_IMAGE)"; \
 	else \
-		sh $(ROOT)/tools/install-disk.sh "$(DISK_IMAGE)" \
+		sh $(ROOT)/common/tools/install-disk.sh "$(DISK_IMAGE)" \
 			"$(ISO_DIR)/boot/$(DZIMAGE_NAME)" \
 			"$(RAMFS_INST_IMG)" \
 			"$(ISO_DIR)/EFI/BOOT/BOOTX64.EFI" "$(ISO_DIR)/limine.conf" \

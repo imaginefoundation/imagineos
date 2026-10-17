@@ -35,7 +35,7 @@ impl Account {
         if self.uid == 0 {
             return password == b"root";
         }
-        crate::crypto::pbkdf2_sha256(password, &self.salt, PBKDF2_ITERATIONS)
+        crate::usr::crypto::pbkdf2_sha256(password, &self.salt, PBKDF2_ITERATIONS)
             .is_some_and(|candidate| constant_time_eq(&candidate, &self.password_hash))
     }
 }
@@ -102,7 +102,7 @@ pub fn make_database(config: &InstallConfig) -> Result<[u8; DATABASE_SIZE], ()> 
     let mut salt = [0u8; 16];
     fill_random(&mut salt)?;
     let password = &config.password[..config.password_length as usize];
-    let hash = crate::crypto::pbkdf2_sha256(password, &salt, PBKDF2_ITERATIONS).ok_or(())?;
+    let hash = crate::usr::crypto::pbkdf2_sha256(password, &salt, PBKDF2_ITERATIONS).ok_or(())?;
     let mut output = [0u8; DATABASE_SIZE];
     output[..8].copy_from_slice(DATABASE_MAGIC);
     output[8] = config.username_length;
