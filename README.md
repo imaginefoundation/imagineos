@@ -30,7 +30,8 @@ O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do 
 
 O código-fonte do kernel fica em `kernel/src/` (o Limine carrega o dzImage, que
 é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
-`userland/apps/`. O USTAR provê o
+`common/programs/` (apps multi-módulo) e `common/utilities/` (comandos de
+arquivo único). O USTAR provê o
 sistema de arquivos inicial em RAM e o fallback; quando existe uma partição DFS
 válida, sua árvore persistente é usada como raiz ativa. Ainda não há uma
 implementação genérica de `switch_root`.

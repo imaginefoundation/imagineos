@@ -6,25 +6,20 @@
 # que o Limine carrega como módulo de boot. A árvore segue o FHS:
 #   * a árvore de dados de `ramfs/` com a fonte PSF copiada;
 #   * os headers da libc e as libs estáticas (libdreamcore.a, libc.a, libm.a);
-#   * a árvore de dados de `ramfs/` com a fonte PSF copiada;
-#   * os headers da libc e as libs estáticas (libdreamcore.a, libc.a, libm.a);
 #   * os objetos crt0/crt1/crti/crtn e o linker script do userspace;
 #   * os binários compilados (init, getty, shell e utilitários);
 #   * o payload do instalador (dzImage, Limine e initramfs instalado).
 #
 # Uso isolado:  make -f build/ramfs.mk
 # Alvos:        ramfs, ramfs-image
-
 RAMFS_MK := $(abspath $(lastword $(MAKEFILE_LIST)))
 
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
-
 # As peças que entram no tar vêm de outros makefiles. Em vez de duplicar suas
 # regras aqui, pedimos que o make os construa recursivamente: kernel.mk produz
 # o dzImage e userland.mk produz os programas e as libs de userspace.
-KERNEL_MK      := $(ROOT)/build/kernel.mk
-USERLAND_MK    := $(ROOT)/build/userland.mk
-THIRD_PARTY_MK := $(ROOT)/build/third_party.mk
+KERNEL_MK   := $(ROOT)/build/kernel.mk
+USERLAND_MK := $(ROOT)/build/userland.mk
 
 # Todo arquivo da árvore `ramfs/` é dependência do tar. Sem isto, editar um
 # arquivo de `ramfs/` (um script em `etc/`, uma fonte) não disparava a
@@ -41,7 +36,6 @@ ramfs-inputs: ramfs
 	$(MAKE) -f $(KERNEL_MK) dzimage
 	$(MAKE) -f $(USERLAND_MK) user-programs user-libs \
 		$(BUILD_DIR)/user/utilities/hello_c
-	$(MAKE) -f $(THIRD_PARTY_MK) third-party
 
 ramfs-image: ramfs-inputs
 	$(MAKE) -f $(RAMFS_MK) $(RAMFS_IMAGE)
@@ -61,7 +55,7 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	cp -a $(RAMFS_ROOT)/. $(BUILD_DIR)/ramfs/
 	cp $(FONT_ASSET) $(BUILD_DIR)/ramfs/system/fonts/zap-vga16.psf
 	mkdir -p $(BUILD_DIR)/ramfs/usr/include $(BUILD_DIR)/ramfs/usr/lib/tcc
-	cp -a $(ROOT)/userland/libc/include/. $(BUILD_DIR)/ramfs/usr/include/
+	cp -a $(USER_LIBC_DIR)/include/. $(BUILD_DIR)/ramfs/usr/include/
 	cp $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/ramfs/usr/lib/libdreamcore.a
 	cp $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/ramfs/usr/lib/libc.a
 	$(AR) rcs $(BUILD_DIR)/user/libm.a $(BUILD_DIR)/user/math.o
@@ -71,29 +65,16 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crti.o
 	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crtn.o
 	cp $(ROOT)/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
-ifeq ($(THIRD_PARTY),1)
-	# Runtime do TCC nativo (vindo de build/third_party.mk).
-	cp $(TCC_SOURCE)/libtcc1.a $(BUILD_DIR)/ramfs/usr/lib/tcc/libtcc1.a
-	cp $(TCC_SOURCE)/runmain.o $(BUILD_DIR)/ramfs/usr/lib/tcc/runmain.o
-endif
 	# Binários userland
 	cp $(BUILD_DIR)/user/sbin/init $(BUILD_DIR)/ramfs/sbin/init
 	cp $(BUILD_DIR)/user/sbin/getty $(BUILD_DIR)/ramfs/sbin/getty
+	cp $(BUILD_DIR)/user/sbin/horust $(BUILD_DIR)/ramfs/sbin/horust
 	cp $(BUILD_DIR)/user/bin/shell $(BUILD_DIR)/ramfs/bin/shell
 	for utility in $(USER_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
 	done
 	for utility in $(USER_C_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
-	done
-ifeq ($(THIRD_PARTY),1)
-	# TCC nativo do ImagineOS (compilado em build/third_party.mk)
-	cp $(BUILD_DIR)/user/utilities/tcc $(BUILD_DIR)/ramfs/bin/tcc
-endif
-	# Clientes EDE (protocolo de superfícies). O binário sai como
-	# .build/user/bin/ede-<nome>, copiado para /bin/ede-<nome>.
-	for program in $(notdir $(EDE_PROGRAMS)); do \
-		cp $(BUILD_DIR)/user/bin/$$program $(BUILD_DIR)/ramfs/bin/$$program; \
 	done
 	# Stack Liminal: display server + window manager/compositor.
 	cp $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/ramfs/bin/liminal-server
@@ -112,7 +93,6 @@ endif
 	tar --format=ustar --numeric-owner --owner=0 --group=0 \
 		--exclude=bin/distroinstall --exclude='system/install/*' \
 		-C $(BUILD_DIR)/ramfs -cf $(RAMFS_INST_IMG) bin dev etc sbin home system tmp usr
-
 	# Adiciona os arquivos do instalador
 	mkdir -p $(BUILD_DIR)/ramfs/system/install
 	cp $(DZ_IMAGE) $(BUILD_DIR)/ramfs/system/install/dzImage

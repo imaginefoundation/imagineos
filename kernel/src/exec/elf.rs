@@ -152,6 +152,12 @@ impl<'a> Elf64<'a> {
     pub fn program_header_count(&self) -> usize {
         self.program_header_count
     }
+
+    /// Fatia de bytes do arquivo ELF, para uso por loaders que tratam a imagem
+    /// de forma genérica (ver `process::Image`).
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, Error> {
