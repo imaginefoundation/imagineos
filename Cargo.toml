@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["shared/abi", "userland/api", "userland/runtimes/ImagineRustRuntime", "userland/runtimes/ImagineCRuntime"]
+members = ["shared/abi", "userland/api", "userland/runtimes/ImagineRustRuntime", "userland/runtimes/ImagineCRuntime", "kernel"]
 resolver = "2"
 
 [dependencies]
@@ -13,7 +13,7 @@ imagineos-abi = { path = "shared/abi" }
 
 [[bin]]
 name = "dreamcore"
-path = "kernel/src/main.rs"
+path = "dnu_kernel/src/main.rs"
 test = false
 
 [features]

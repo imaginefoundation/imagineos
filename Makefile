@@ -65,4 +65,4 @@ image: kernel user-programs ramfs-image
 release: iso
 
 clean:
-	rm -rf target $(BUILD_DIR)
+	rm -rf target ramfs $(BUILD_DIR)

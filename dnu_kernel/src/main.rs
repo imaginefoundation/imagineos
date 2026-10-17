@@ -59,7 +59,7 @@ mod paging;
 #[path = "fs/permissions.rs"]
 mod permissions;
 #[path = "power.rs"]
-mod power;
+mod acpi;
 #[path = "exec/process.rs"]
 pub mod process;
 #[path = "fs/ramfs.rs"]
@@ -133,7 +133,7 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     console_write(";\nreserved boot frame at physical 0x");
     console_hex(boot_frame.physical_address);
     console_write("\n");
-    power::init(boot_info.rsdp_address, boot_info.hhdm_offset);
+    acpi::init(boot_info.rsdp_address, boot_info.hhdm_offset);
 
     let disk_ready = match ata::init() {
         Ok(sectors) => {

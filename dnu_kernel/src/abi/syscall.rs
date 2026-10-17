@@ -138,7 +138,7 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
         SYS_GETTIMEOFDAY => gettimeofday(frame_ref),
         SYS_SHUTDOWN_REQUEST => {
             frame_ref.rax = if process::current_credentials().0 == 0 {
-                crate::power::request_shutdown();
+                crate::acpi::request_shutdown();
                 0
             } else {
                 (-1i64) as u64
@@ -149,7 +149,7 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
             frame_ref.rax = if process::current_pid() != 1 {
                 (-1i64) as u64
             } else {
-                u64::from(crate::power::take_shutdown_request())
+                u64::from(crate::acpi::take_shutdown_request())
             };
             frame
         }
@@ -158,7 +158,7 @@ fn syscall_dispatch_inner(frame: *mut TrapFrame) -> *mut TrapFrame {
                 frame_ref.rax = (-1i64) as u64;
                 frame
             } else {
-                match crate::power::power_off() {
+                match crate::acpi::power_off() {
                     Ok(()) => unreachable!(),
                     Err(_) => {
                         crate::console_write(
