@@ -1,13 +1,12 @@
-//! Formato e execução de imagens: parsers (DEF/ELF), loader e escalonador.
+//! Formato e execução de imagens: parser DEF, loader e escalonador.
 //!
 //! `process` é o módulo do escalonador; `descriptors`, `loader` e `space` são
-//! seus blocos de apoio. Os parsers ficam em módulos próprios porque não
-//! dependem de nenhum outro subsistema do kernel.
+//! seus blocos de apoio. O DEF é o único formato executável de userspace; o
+//! kernel em si continua sendo ELF apenas porque é o Limine quem o carrega.
 
 #[path = "def.rs"]
 pub mod def;
 pub mod descriptors;
-pub mod elf;
 pub mod loader;
 pub mod process;
 pub mod space;

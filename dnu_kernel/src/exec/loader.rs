@@ -1,15 +1,14 @@
-//! Carregamento de imagens executáveis (`ELF64` e `DEF`/`.xapp`).
+//! Carregamento de imagens executáveis **DEF** (Dreamcore Executable Format).
 //!
-//! O formato é escolhido pelo número mágico: `\x7fELF` para ELF e `DNUF` para
-//! DEF. Os dois parsers expõem a mesma visão de segmentos, então o mapeamento
-//! de páginas, a pilha inicial e o `TrapFrame` são montados uma única vez.
+//! O DEF é o único formato de userspace aceito: o kernel identifica a imagem
+//! pelo magic `DNUF` e rejeita qualquer outra coisa (inclusive ELF) com
+//! `LoadError::InvalidDef`.
 
 use core::mem::size_of;
 use core::ptr;
 
 use crate::abi::trap::TrapFrame;
 use crate::exec::def::{self, Def};
-use crate::exec::elf::{Elf64, Error as ElfError};
 use crate::fpu;
 use crate::gdt;
 use crate::paging::{AddressSpace, MapError};
@@ -23,11 +22,12 @@ use super::space::copy_to_space_result;
 /// Falhas possíveis ao montar um processo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadError {
-    InvalidElf(ElfError),
-    InvalidImage,
+    /// O arquivo não é um DEF válido (magic ausente ou cabeçalho incoerente).
     InvalidDef(def::Error),
     OutOfMemory,
     InvalidMapping,
+    /// `process::init` recebeu uma lista vazia de programas.
+    EmptyPrograms,
 }
 
 /// Menor pilha de usuário aceita quando o binário DEF declara a sua própria.
@@ -35,7 +35,7 @@ pub const MIN_USER_STACK_SIZE: u64 = 8 * 4096;
 /// Maior pilha de usuário aceita quando o binário DEF declara a sua própria.
 pub const MAX_USER_STACK_SIZE: u64 = 4096 * 4096;
 
-/// Um segmento carregável de qualquer formato de imagem suportado.
+/// Um segmento carregável, achatado a partir do DEF.
 struct LoadedSegment {
     virtual_address: u64,
     memory_size: u64,
@@ -43,89 +43,32 @@ struct LoadedSegment {
     file_size: usize,
 }
 
-/// Uma imagem executável já validada.
-enum Image<'a> {
-    Elf(Elf64<'a>),
-    Def(Def<'a>),
-}
+/// Uma imagem executável já validada (sempre DEF).
+type Image<'a> = Def<'a>;
 
-impl<'a> Image<'a> {
-    fn parse(image: &'a [u8]) -> Result<Self, LoadError> {
-        if image.len() >= 4 && image[..4] == imagineos_abi::def::DEF_MAGIC {
-            return Def::parse(image)
-                .map(Image::Def)
-                .map_err(LoadError::InvalidDef);
-        }
-        Elf64::parse(image)
-            .map(Image::Elf)
-            .map_err(LoadError::InvalidElf)
-    }
-
-    fn entry(&self) -> u64 {
-        match self {
-            Image::Elf(elf) => elf.entry,
-            Image::Def(def) => def.entry,
-        }
-    }
-
-    fn segment_count(&self) -> usize {
-        match self {
-            Image::Elf(elf) => elf.program_header_count(),
-            Image::Def(def) => def.segment_count(),
-        }
-    }
-
-    fn segment(&self, index: usize) -> Result<Option<LoadedSegment>, LoadError> {
-        // Os dois parsers usam os mesmos nomes de campo, mas são tipos
-        // distintos; o mapa explícito os achata no formato do loader.
-        let segment = match self {
-            Image::Elf(elf) => elf.segment(index).map_err(LoadError::InvalidElf)?.map(|s| {
-                LoadedSegment {
-                    virtual_address: s.virtual_address,
-                    memory_size: s.memory_size,
-                    file_offset: s.file_offset,
-                    file_size: s.file_size,
-                }
-            }),
-            Image::Def(def) => def.segment(index).map_err(LoadError::InvalidDef)?.map(|s| {
-                LoadedSegment {
-                    virtual_address: s.virtual_address,
-                    memory_size: s.memory_size,
-                    file_offset: s.file_offset,
-                    file_size: s.file_size,
-                }
-            }),
-        };
-        Ok(segment)
-    }
-
-    fn file_bytes(&self, segment: &LoadedSegment) -> Option<&'a [u8]> {
-        let end = segment.file_offset.checked_add(segment.file_size)?;
-        self.raw().get(segment.file_offset..end)
-    }
-
-    fn raw(&self) -> &'a [u8] {
-        match self {
-            Image::Elf(elf) => elf.bytes(),
-            Image::Def(def) => def.bytes(),
-        }
-    }
-
-    /// Pilha inicial pedida pela imagem, limitada à faixa aceita.
-    ///
-    /// Um ELF não carrega essa informação (usa o padrão do kernel); um DEF
-    /// declara explicitamente. Valores absurdos são grampeados para que um
-    /// binário malformado não esgote a memória.
-    fn stack_size(&self) -> u64 {
-        match self {
-            Image::Elf(_) => USER_STACK_SIZE,
-            Image::Def(def) => match def.stack_size {
-                0 => USER_STACK_SIZE,
-                requested => requested.clamp(MIN_USER_STACK_SIZE, MAX_USER_STACK_SIZE),
-            },
-        }
+/// Pilha inicial pedida pela imagem, limitada à faixa aceita.
+///
+/// O DEF declara explicitamente o tamanho da pilha. Valores absurdos são
+/// grampeados para que um binário malformado não esgote a memória.
+fn stack_size(image: &Image<'_>) -> u64 {
+    match image.stack_size {
+        0 => USER_STACK_SIZE,
+        requested => requested.clamp(MIN_USER_STACK_SIZE, MAX_USER_STACK_SIZE),
     }
 }
+
+fn loaded_segment(image: &Image<'_>, index: usize) -> Result<Option<LoadedSegment>, LoadError> {
+    Ok(image
+        .segment(index)
+        .map_err(LoadError::InvalidDef)?
+        .map(|segment| LoadedSegment {
+            virtual_address: segment.virtual_address,
+            memory_size: segment.memory_size,
+            file_offset: segment.file_offset,
+            file_size: segment.file_size,
+        }))
+}
+
 
 /// Onde escrever o `TrapFrame` inicial do processo novo.
 pub enum FrameLocation {
@@ -158,11 +101,11 @@ pub fn load(
     name: &str,
     location: FrameLocation,
 ) -> Result<Process, LoadError> {
-    let image = Image::parse(image)?;
+    let image = Def::parse(image).map_err(LoadError::InvalidDef)?;
     let address_space = AddressSpace::new_user().ok_or(LoadError::OutOfMemory)?;
     map_segments(&image, &address_space)?;
 
-    let stack_size = image.stack_size();
+    let stack_size = stack_size(&image);
     let stack_start = USER_STACK_TOP
         .checked_sub(stack_size)
         .ok_or(LoadError::InvalidMapping)?;
@@ -176,7 +119,7 @@ pub fn load(
     let (user_stack, user_argv, user_envp) =
         prepare_user_stack(&address_space, arguments, environment)?;
 
-    let entry = image.entry();
+    let entry = image.entry;
     if address_space.translate(entry).is_none() {
         return Err(LoadError::InvalidMapping);
     }
@@ -234,7 +177,7 @@ pub fn load(
 
 fn map_segments(image: &Image<'_>, address_space: &AddressSpace) -> Result<(), LoadError> {
     for index in 0..image.segment_count() {
-        let Some(segment) = image.segment(index)? else {
+        let Some(segment) = loaded_segment(image, index)? else {
             continue;
         };
         let segment_end = segment
@@ -255,10 +198,23 @@ fn map_segments(image: &Image<'_>, address_space: &AddressSpace) -> Result<(), L
             page += PAGE_SIZE;
         }
         zero_user_range(address_space, segment.virtual_address, segment.memory_size)?;
-        let file_bytes = image.file_bytes(&segment).ok_or(LoadError::InvalidMapping)?;
+        let file_bytes = image
+            .file_bytes(segment_file(&segment))
+            .ok_or(LoadError::InvalidMapping)?;
         copy_to_space_result(address_space, segment.virtual_address, file_bytes)?;
     }
     Ok(())
+}
+
+/// Reconstrói o `def::Segment` que `Def::file_bytes` espera.
+fn segment_file(segment: &LoadedSegment) -> def::Segment {
+    def::Segment {
+        virtual_address: segment.virtual_address,
+        memory_size: segment.memory_size,
+        file_offset: segment.file_offset,
+        file_size: segment.file_size,
+        permissions: 0,
+    }
 }
 
 fn initial_frame(

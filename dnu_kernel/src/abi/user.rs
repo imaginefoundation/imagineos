@@ -73,29 +73,29 @@ fn copy_path<'a>(address: u64, length: u64, buffer: &'a mut [u8]) -> Result<&'a 
     if buffer[..length].contains(&0) {
         return Err(EINVAL);
     }
-        core::str::from_utf8(&buffer[..length]).map_err(|_| EINVAL)
-    }
+    core::str::from_utf8(&buffer[..length]).map_err(|_| EINVAL)
+}
 
-    /// Lê um caminho terminado em NUL (até ao tamanho do buffer) e devolve a fatia.
-    ///
-    /// Usado por `pivot_root`, onde a ABI não envia o comprimento.
+/// Lê um caminho terminado em NUL (até ao tamanho do buffer) e devolve a fatia.
+///
+/// Usado por `pivot_root`, onde a ABI não envia o comprimento.
 pub fn c_string_from_user(address: u64, buffer: &mut [u8]) -> Option<&str> {
     if address == 0 || !process::copy_from_current_user(address, buffer) {
         return None;
     }
     let end = buffer.iter().position(|&byte| byte == 0).unwrap_or(0);
-        core::str::from_utf8(&buffer[..end]).ok()
-    }
+    core::str::from_utf8(&buffer[..end]).ok()
+}
 
-    /// Copia um vetor de `UserArg` (`argv`/`envp`) para armazenamento próprio.
-    ///
-    /// `STORAGE` é a quantidade máxima de entradas (dimensão dos arrays fixos do
-    /// processo). Os bytes de cada item são gravados no próprio registro de 16
-    /// bytes, então é tudo ou nada: se falhar, o vetor de destino não é usado.
-pub fn load_user_vector<const STORAGE: usize>(
+/// Copia um vetor de `UserArg` (`argv`/`envp`) para armazenamento próprio.
+///
+/// Cada entrada aponta para `length` bytes no espaço de usuário; `storage[index]`
+/// guarda esses bytes e `lengths[index]` o comprimento real. É tudo ou nada: se
+/// qualquer item falhar, o vetor de destino não é usado.
+pub fn load_user_vector<const STORAGE: usize, const ITEM: usize>(
     pointer: u64,
     count: usize,
-    storage: &mut [UserArg; STORAGE],
+    storage: &mut [[u8; ITEM]; STORAGE],
     lengths: &mut [usize; STORAGE],
 ) -> Result<usize, i64> {
     if count > STORAGE {
@@ -114,26 +114,22 @@ pub fn load_user_vector<const STORAGE: usize>(
     if !process::copy_from_current_user(pointer, metadata) {
         return Err(EFAULT);
     }
-    // Cada `UserArg` empresta seus 16 bytes para os dados do item: os dois
-    // campos de 64 bits formam o armazenamento do argumento.
-    const ITEM: usize = core::mem::size_of::<UserArg>();
     for index in 0..count {
         let Ok(length) = usize::try_from(records[index].length) else {
             return Err(E2BIG);
         };
-        if length > ITEM {
+        if length > storage[index].len() {
             return Err(E2BIG);
         }
-        let bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                (&mut storage[index] as *mut UserArg).cast::<u8>(),
-                length,
+        if length != 0
+            && !process::copy_from_current_user(
+                records[index].address,
+                &mut storage[index][..length],
             )
-        };
-        if length != 0 && !process::copy_from_current_user(records[index].address, bytes) {
+        {
             return Err(EFAULT);
         }
-        if bytes[..length].contains(&0) {
+        if storage[index][..length].contains(&0) {
             return Err(EINVAL);
         }
         lengths[index] = length;
@@ -143,26 +139,17 @@ pub fn load_user_vector<const STORAGE: usize>(
 
 /// Constrói as fatias `&[u8]` de um vetor já carregado.
 ///
-/// O armazenamento é reaproveitado: `storage[index]` guarda os bytes do item e
-/// tem capacidade de `core::mem::size_of::<UserArg>() * STORAGE`.
-/// `count <= STORAGE` é garantido pelo carregamento.
-pub fn vector_slices<'a, const STORAGE: usize>(
-    storage: &'a [UserArg; STORAGE],
+/// `count <= STORAGE` é garantido pelo carregamento, que também valida que cada
+/// item cabe em `ITEM` bytes.
+pub fn vector_slices<'a, const STORAGE: usize, const ITEM: usize>(
+    storage: &'a [[u8; ITEM]; STORAGE],
     lengths: &[usize; STORAGE],
     count: usize,
 ) -> Vector<'a, STORAGE> {
     debug_assert!(count <= STORAGE);
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            storage.as_ptr().cast::<u8>(),
-            core::mem::size_of::<UserArg>() * STORAGE,
-        )
-    };
     let mut slices: [&[u8]; STORAGE] = [&[]; STORAGE];
-    let stride = core::mem::size_of::<UserArg>();
     for index in 0..count {
-        let start = index * stride;
-        slices[index] = &bytes[start..start + lengths[index]];
+        slices[index] = &storage[index][..lengths[index]];
     }
     Vector { slices, count }
 }
@@ -204,8 +191,8 @@ mod layout {
         assert_eq!(core::mem::size_of::<SurfaceInfo>(), 24);
         assert_eq!(core::mem::size_of::<SurfaceEvent>(), 28);
         assert_eq!(core::mem::size_of::<SurfaceSnapshot>(), 40);
-                // `UserIdentity` é `[u32; 4]` + `[u8; 32]` + `u32` + `[u8; 64]`, com
-                // padding de 4 bytes depois de `hostname_length` (alinhamento 4).
-                assert_eq!(core::mem::size_of::<UserIdentity>(), 108);
-            }
-        }
+        // `UserIdentity` é `[u32; 4]` + `[u8; 32]` + `u32` + `[u8; 64]`, com
+        // padding de 4 bytes depois de `hostname_length` (alinhamento 4).
+        assert_eq!(core::mem::size_of::<UserIdentity>(), 108);
+    }
+}

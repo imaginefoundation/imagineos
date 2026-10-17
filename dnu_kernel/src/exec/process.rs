@@ -3,7 +3,7 @@
 //! Este módulo concentra o estado e as políticas; os blocos de apoio vivem nos
 //! submódulos irmãos:
 //!
-//! * `loader` — carregamento de ELF/DEF, pilha inicial e `TrapFrame`;
+//! * `loader` — carregamento de imagens DEF, pilha inicial e `TrapFrame`;
 //! * `descriptors` — tabela de descritores e contagem de pontas de pipe;
 //! * `space` — cópia validada entre kernel e espaço de usuário.
 //!
@@ -172,16 +172,16 @@ pub fn init(programs: &[(&[u8], usize)]) -> Result<(), LoadError> {
         {
             crate::console_write("process: loading PID ");
             crate::console_write_number(pid as u64);
-            crate::console_write(" ELF\n");
+            crate::console_write(" DEF\n");
         }
         let slot = scheduler.count;
         let arguments: [&[u8]; 1] = [b"/sbin/init"];
-        let process = load_elf(image, pid, slot, &arguments, &[], false, "/sbin/init")?;
+        let process = load(image, pid, slot, &arguments, &[], false, "/sbin/init")?;
         scheduler.processes[scheduler.count] = process;
         scheduler.count += 1;
     }
     if scheduler.count == 0 {
-        return Err(LoadError::InvalidMapping);
+        return Err(LoadError::EmptyPrograms);
     }
     Ok(())
 }
@@ -207,7 +207,8 @@ impl FpuState {
     }
 }
 
-fn load_elf(
+/// Carrega uma imagem DEF no slot indicado (usado pelo boot de PID 1).
+fn load(
     image: &[u8],
     pid: usize,
     slot: usize,
@@ -692,7 +693,7 @@ pub fn execve_current(
         (slot, process.pid, process)
     };
 
-    // `load_elf` monta o novo `TrapFrame` no **topo** da pilha de kernel do
+    // `loader::load` monta o novo `TrapFrame` no **topo** da pilha de kernel do
     // slot. Isso colide com o frame do `int 0x80` que está ativo agora, porque
     // o `execve` roda no mesmo slot do processo que vai ser substituído
     // (diferente do `spawn`, que usa outro slot). Escrevemos o frame novo na
@@ -715,8 +716,10 @@ pub fn execve_current(
     ) {
         Ok(process) => process,
         Err(_) => {
+            // Imagem que não é um DEF válido (ou sem memória): o POSIX
+            // reporta `ENOEXEC` para um formato não reconhecido.
             unsafe {
-                (*frame).rax = (-8i64) as u64;
+                (*frame).rax = crate::abi::trap::ENOEXEC as u64;
             }
             return frame;
         }
@@ -806,7 +809,7 @@ pub fn spawn_current_with_io(
         let scheduler = unsafe { &*SCHEDULER.0.get() };
         scheduler.processes[parent_slot].pid
     };
-    let process = match load_elf(
+    let process = match load(
         image,
         pid,
         slot,
@@ -818,7 +821,7 @@ pub fn spawn_current_with_io(
         Ok(process) => process,
         Err(_) => {
             unsafe {
-                (*frame).rax = (-8i64) as u64;
+                (*frame).rax = crate::abi::trap::ENOEXEC as u64;
             }
             return frame;
         }

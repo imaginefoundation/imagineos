@@ -1,10 +1,9 @@
 //! Parser do formato **DEF** (Dreamcore Executable Format) no kernel.
 //!
-//! Este módulo dá ao loader de processos a mesma visão de *segmentos
-//! carregáveis* que o parser de ELF (`crate::elf`) já oferece, mas lendo um
-//! arquivo `.xapp` em vez de um ELF. O objetivo é que o caminho de carregamento
-//! em `process.rs` seja idêntico nos dois casos: só muda de onde vêm o
-//! `entry_point` e a lista de segmentos.
+//! Este módulo dá ao loader de processos a visão de *segmentos carregáveis* do
+//! DEF: `entry_point`, lista de segmentos, tamanho de pilha e capacidades. O
+//! DEF é o único formato de userspace aceito pelo kernel; o ELF existe apenas
+//! como saída intermediária do toolchain, convertida por `dnu-pack`.
 //!
 //! A estrutura de bytes do cabeçalho está documentada (e compartilhada com a
 //! ferramenta `dnu-pack`) em `imagineos_abi::def`. Aqui ficam apenas as leituras
@@ -37,8 +36,7 @@ use imagineos_abi::def::{
     DefPermissions,
 };
 
-/// Erros de parsing de um DEF. Espelha o enum de `crate::elf::Error` para que o
-/// chamador possa tratá-los da mesma forma.
+/// Erros de parsing de um DEF.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated,
@@ -52,9 +50,6 @@ pub enum Error {
 }
 
 /// Um segmento carregável de um DEF, já validado.
-///
-/// Os nomes dos campos são os mesmos de `crate::elf::Segment` de propósito: o
-/// loader de processos consome os dois tipos por um único caminho.
 #[derive(Clone, Copy)]
 pub struct Segment {
     pub virtual_address: u64,
@@ -158,7 +153,7 @@ impl<'a> Def<'a> {
     /// Lê a entrada `index` da tabela de segmentos.
     ///
     /// Devolve `Ok(None)` quando a entrada existe mas não é carregável (por
-    /// exemplo, `memory_size == 0`), como faz o parser de ELF.
+    /// exemplo, `memory_size == 0`).
     pub fn segment(&self, index: usize) -> Result<Option<Segment>, Error> {
         if index >= self.segment_count as usize {
             return Ok(None);
@@ -217,8 +212,7 @@ impl<'a> Def<'a> {
         self.segment_count as usize
     }
 
-    /// Fatia de bytes do arquivo DEF, para uso por loaders genéricos
-    /// (ver `process::Image`).
+    /// Fatia de bytes do arquivo DEF.
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }

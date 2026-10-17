@@ -5,7 +5,9 @@ pub mod syscall;
 
 pub use syscall::*;
 
-pub const ABI_VERSION: u64 = 4;
+pub const ABI_VERSION: u64 = 1; // Não há porque mudar a versão da ABI a cada compilação,
+                                // somente se houver transição de versão estável 
+                                // (v1.x -> ABI 1, v2.x ABI 2)
 
 // Limites compartilhados entre kernel, libc C (`dreamcore.h`) e runtime Rust.
 // O kernel não pode aceitar pedidos maiores que estes, e nenhum deles pode

@@ -18,7 +18,7 @@ a cada um deles. Cada arquivo também roda isolado:
 | --- | --- | --- |
 | `build/common.mk` | variáveis, ferramentas e artefatos compartilhados | (incluído, sem alvos) |
 | `build/kernel.mk` | kernel `dreamcore` e `dzImage` | `kernel`, `dzimage` |
-| `build/tools.mk` | ferramentas do host (`dfs-image`) | `tools` |
+| `build/tools.mk` | ferramentas do host (`dfs-image`, `dnu-pack`) | `tools` |
 | `build/userland.mk` | apps, utilitários, libc e runtime C | `user-programs`, `user-libs`, `c-app` |
 | `build/ramfs.mk` | árvore `ramfs/` e empacotamento do USTAR | `ramfs`, `ramfs-image` |
 | `build/iso.mk` | ISO UEFI e execução no QEMU | `iso`, `run`, `disk-image`, `run-disk`, `run-installer` |
@@ -56,15 +56,18 @@ ELF, carrega seus segmentos na RAM e salta direto para o `_start` do kernel,
 que coleta as respostas do protocolo Limine e monta o `BootInfo`. O USTAR
 `ramfs.tar` é produzido a partir de `ramfs/`; os programas Rust de
 `common/programs/` e `common/utilities/` são incluídos sem
-extensão: `/sbin/init`, `/sbin/getty` e comandos em `/bin`. A fonte PSF
+ extensão: `/sbin/init`, `/sbin/getty` e comandos em `/bin`. Todos eles são
+empacotados no formato DEF (magic `DNUF`) por `dnu-pack`; o kernel não carrega
+mais ELF de userspace. A fonte PSF
 8x16 `common/tools/assets/zap-vga16.psf` é incorporada ao kernel como
 fallback para uma fonte inválida ou ausente no RAMFS. Ela também é copiada
 para `system/fonts/zap-vga16.psf` dentro do USTAR, de modo que o instalador
 inclui a fonte na raiz DFS persistente.
 
 Apps C em `ramfs/home/<nome>.c` implementam `main`; `make c-app APP=<nome>` os
-compila com a libc do ImagineOS e linka como ELF estatico para o Dreamcore
-(pela raiz ou direto, `make -f build/userland.mk c-app APP=<nome>`). O runtime C
+compila com a libc do ImagineOS e linka como ELF estatico, que `dnu-pack`
+converte para o contêiner DEF antes de entrar no RAMFS (pela raiz ou direto,
+`make -f build/userland.mk c-app APP=<nome>`). O runtime C
 (fornecido pela crate `ImagineCRuntime`) expõe o entrypoint `_start`. A interface inicial em
 `common/userland/libraries/libc/` inclui `read`, `write`, `_exit`, `printf`, `puts`, entrada e
 saida de caracteres, operacoes basicas de `<string.h>` e `<stdlib.h>`, e as

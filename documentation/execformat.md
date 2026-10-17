@@ -1,7 +1,8 @@
 Imagine Operating System Specification
 
 - Nota: Somente programas DEF serão suportados pelo imagineos e compilados para ele, o kernel contunuará sendo compilado em ELF para compatibilidade com o Limine (Assim que eu implementar um compilador que gere DEF)
-- Implemente todas as funcionalidades que faltam para portarmos a std do rust, e baixe e porte o rustc para o ImagineOS, e por fim adapte ele para produzir executáveis DEF (com a extensão .xapp)
+- Nota (atual): a ABI **só** aceita DEF. O loader ELF foi removido do kernel: `SYS_EXEC`/`SYS_EXECVE`/`SYS_SPAWN` rejeitam qualquer imagem que não comece com o magic `DNUF`.
+- Nota (atual): a extensão `.xapp` **não** é usada pelos binários DEF. Os programas são arquivos sem extensão (ex.: `/bin/ls`, `/sbin/init`). A extensão `.xapp` será implementada de outra forma (pacote de aplicação do Liminal), portanto os trechos abaixo que a citam como nome de executável são históricos.
 
 DEF Spec – DNU (Dreamcore) Executable Format Spec
 Em um sistema operacional (SO), API, ABI e Runtime são conceitos

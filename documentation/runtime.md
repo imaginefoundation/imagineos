@@ -1,22 +1,27 @@
 # ImagineOS Runtime — DEF Format & Application Packaging
 
 Este documento descreve o **runtime de execução** do ImagineOS: o formato binário
-**DEF** (Dreamcore Executable Format, usado pelos arquivos `.xapp`), o caminho de
-carregamento no kernel, e a ferramenta de empacotamento `dnu-pack`.
+**DEF** (Dreamcore Executable Format), o caminho de carregamento no kernel, e a
+ferramenta de empacotamento `dnu-pack`.
+
+> **Nota:** o DEF **não** usa extensão de arquivo. Programas de sistema e
+> utilitários são arquivos sem sufixo (`/sbin/init`, `/bin/ls`). A extensão
+> `.xapp` é do **pacote de aplicação** do framework Liminal
+> (`documentation/appframework.md`), que é outro artefato: um arquivo de
+distribuição interpretado pela Liminal Runtime, e **não** um executável DEF.
 
 ---
 
 ## 1. Visão Geral
 
 O ImagineOS executa aplicativos em Ring 3 carregados a partir de um formato
-binário próprio chamado **DEF**. Um aplicativo empacotado pelo framework Liminal
-(ver `documentation/appframework.md`) produz um arquivo com extensão `.xapp`,
-que nada mais é do que um binário DEF contendo o código e os recursos do app.
+binário próprio chamado **DEF**. É o único formato aceito pelo kernel: o loader
+ELF de userspace foi removido da ABI.
 
 O fluxo completo é:
 
 ```text
-[ fontes do app ] --dnu-pack--> [ arquivo .xapp (DEF) ] --exec--> [ processo em Ring 3 ]
+[ fontes do app ] --dnu-pack--> [ DEF sem extensão ] --exec--> [ processo em Ring 3 ]
 ```
 
 ---
@@ -35,7 +40,7 @@ O DEF é um contêiner executável simples e verificável, definido em
 
 | Offset | Tamanho | Campo | Descrição |
 |-------:|--------:|-------|-----------|
-| `0`  | 4  | `magic`            | `DEF_MAGIC` (`"DEF\0"`) |
+| `0`  | 4  | `magic`            | `DEF_MAGIC` (`"DNUF"`) |
 | `4`  | 1  | `arch`             | `DefArch` (ex.: `X86_64`) |
 | `5`  | 1  | `type`             | `DefType` (ex.: `App`) |
 | `6`  | 2  | `format_version`   | `DEF_FORMAT_VERSION` |
@@ -111,8 +116,13 @@ ferramenta de linha de comando que transforma fontes em um arquivo DEF.
 ### 4.1 Uso
 
 ```bash
-dnu-pack --input <arquivo> --output <arquivo.xapp> [--type app|lib|driver]
+dnu-pack <entrada.elf> <saida> [--type app|server|driver|runtime] [--caps ...] [--stack <bytes>]
 ```
+
+O `dnu-pack` recebe o **ELF estático** que o `rustc`/`cc` produzem (é o único
+formato que o toolchain sabe emitir) e reescreve os segmentos `PT_LOAD` no
+contêiner DEF. Depois disso, o ELF original não é mais usado: o kernel lê apenas
+DEF.
 
 ### 4.2 O que a ferramenta faz
 
@@ -121,7 +131,7 @@ dnu-pack --input <arquivo> --output <arquivo.xapp> [--type app|lib|driver]
    (`READ`, `WRITE`, `EXECUTE`).
 3. Monta o cabeçalho DEF, a tabela de segmentos e o payload, ajustando cada
    `file_offset` para o valor **absoluto** correto.
-4. Escreve o arquivo final `.xapp`, pronto para ser carregado pelo kernel.
+4. Escreve o arquivo final (sem extensão), pronto para ser carregado pelo kernel.
 
 ---
 

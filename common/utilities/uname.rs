@@ -1,12 +1,27 @@
 #![no_std]
 #![no_main]
 
-const SYSTEM: &str = "ImagineOS";
-const NODE: &str = "astrid";
-const RELEASE: &str = "0.1.0";
-const VERSION: &str = "Dreamcore ABI 2";
-const MACHINE: &str = "x86_64";
-const OPERATING_SYSTEM: &str = "ImagineOS";
+const SYSTEM: &str = "ImagineOS";                   // Distribuição
+const CODENAME: &str = "astrid";                        // Codinome
+const RELEASE: &str = "0.2.1";                      // Versão
+const MACHINE: &str = "x86_64";                     // Arquitetura
+const OPERATING_SYSTEM: &str = "DNU/ImagineOS";     // Sistema Operacional
+
+/// Prefixo do campo `-v`; a versão da ABI vem do kernel em tempo de execução.
+const VERSION_PREFIX: &str = "Dreamcore (DNU) ABI ";
+
+/// `-v`: consulta `SYS_ABI_VERSION` em vez de repetir um número embutido.
+///
+/// Um valor fixo aqui mentiria sempre que o kernel mudasse a ABI — foi o que
+/// aconteceu quando a ABI chegou à versão 4 e o `uname` continuava anunciando 2.
+/// Se a syscall falhar, escreve o prefixo sem número em vez de abortar.
+fn write_version() -> imagineos_rt::imagineos::Result<()> {
+    imagineos_rt::print!("{VERSION_PREFIX}")?;
+    match imagineos_rt::imagineos::syscall::abi_version() {
+        Ok(version) => imagineos_rt::print!("{version}"),
+        Err(_) => Ok(()),
+    }
+}
 
 #[derive(Default)]
 struct Fields {
@@ -101,7 +116,13 @@ fn user_main(
     write_field(fields.system, SYSTEM, &mut separator)?;
     write_field(fields.node, NODE, &mut separator)?;
     write_field(fields.release, RELEASE, &mut separator)?;
-    write_field(fields.version, VERSION, &mut separator)?;
+    if fields.version {
+        if separator {
+            imagineos_rt::print!(" ")?;
+        }
+        write_version()?;
+        separator = true;
+    }
     write_field(fields.machine, MACHINE, &mut separator)?;
     write_field(fields.operating_system, OPERATING_SYSTEM, &mut separator)?;
     imagineos_rt::println!()?;

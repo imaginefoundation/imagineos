@@ -2,12 +2,17 @@
 # ImagineOS - programas de usuário (Rust, C e libc)
 # ==============================================================================
 #
-# Compila os programas de userspace para o alvo x86_64-unknown-none:
+# Compila os programas de userspace para o alvo x86_64-unknown-none e os
+# empacota no formato **DEF**, o único que o kernel carrega:
 #   * apps principais: init, getty, shell   -> .build/user/{sbin,bin}
 #   * stack Liminal: liminal-server, liminal-client -> .build/user/bin
 #   * utilitários Rust: ls, cat, ...                -> .build/user/utilities
 #   * utilitários C: hello_c                        -> .build/user/utilities
 #   * libc estática (libdreamcore.a), objetos crt e runtime C.
+#
+# O toolchain só emite ELF estático; cada binário é linkado em `.elf` e o
+# `dnu-pack` o converte para o arquivo final (sem extensão, como são instalados
+# em /bin e /sbin).
 #
 # Os fontes vivem em common/: programas multi-módulo em common/programs/ e
 # utilitários de arquivo único em common/utilities/. A libc fica em
@@ -16,13 +21,21 @@
 # Uso isolado:  make -f build/userland.mk
 # Alvos:        user-programs, user-libs, c-app
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+include $(ROOT)/build/tools.mk
 
 PROGRAMS_DIR  := $(ROOT)/common/programs
 UTILITIES_DIR := $(ROOT)/common/utilities
 
+# Converte o ELF linkado (`$<`) no DEF final (`$@`). `--stack` mantém o padrão do
+# dnu-pack; `--type` e `--caps` ficam no default (App sem capacidades) até que os
+# manifestos de serviço existam.
+define pack_def
+	$(DNU_PACK_BIN) $< $@
+endef
+
 .PHONY: user-programs user-libs c-app
 
-user-programs: $(USER_PROGRAMS)
+user-programs: $(USER_PROGRAMS) $(USER_PROGRAM_ELFS)
 
 user-libs: $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/user/crt_empty.o
 
@@ -47,11 +60,17 @@ $(USER_CRT_RLIB): $(USER_CRT_MANIFEST) $(ROOT)/common/userland/runtimes/ImagineC
 # ------------------------------------------------------------------------------
 # Programas Rust de userspace
 # ------------------------------------------------------------------------------
+# Cada programa é linkado como ELF em `.build/user/.../nome.elf` e empacotado
+# em DEF por `pack_def` no arquivo final `nome`. O ELF fica no build porque o
+# dnu-pack precisa dele para extrair os segmentos; nada além do DEF entra no RAMFS.
 
 # Apps de arquivo único em common/programs/<dir>/<nome>.rs.
 # O nome instalado é a última parte do diretório (`login/getty.rs` -> getty,
 # `sysman/init.rs` -> init).
-$(BUILD_DIR)/user/sbin/getty: $(PROGRAMS_DIR)/login/getty.rs $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/sbin/getty: $(BUILD_DIR)/user/sbin/getty.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/sbin/getty.elf: $(PROGRAMS_DIR)/login/getty.rs $(ROOT)/common/userland/linker.ld \
                               $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name getty --edition 2024 --target $(TARGET) \
@@ -60,7 +79,10 @@ $(BUILD_DIR)/user/sbin/getty: $(PROGRAMS_DIR)/login/getty.rs $(ROOT)/common/user
 		-C panic=abort -C relocation-model=static \
 		-C link-arg=-T$(ROOT)/common/userland/linker.ld $< -o $@
 
-$(BUILD_DIR)/user/sbin/init: $(PROGRAMS_DIR)/sysman/init.rs $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/sbin/init: $(BUILD_DIR)/user/sbin/init.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/sbin/init.elf: $(PROGRAMS_DIR)/sysman/init.rs $(ROOT)/common/userland/linker.ld \
                              $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name init --edition 2024 --target $(TARGET) \
@@ -73,7 +95,10 @@ $(BUILD_DIR)/user/sbin/init: $(PROGRAMS_DIR)/sysman/init.rs $(ROOT)/common/userl
 # regra própria: o padrão `%.rs` não cobre `main.rs` mais os módulos irmãos.
 SHELL_SOURCES := $(wildcard $(PROGRAMS_DIR)/shell/*.rs)
 
-$(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/bin/shell: $(BUILD_DIR)/user/bin/shell.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/bin/shell.elf: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/common/userland/linker.ld \
                              $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name shell --edition 2024 --target $(TARGET) \
@@ -85,10 +110,13 @@ $(BUILD_DIR)/user/bin/shell: $(filter-out %/tests.rs,$(SHELL_SOURCES)) $(ROOT)/c
 
 # Liminal stack: o liminalServer é o display server (framebuffer, composição
 # em backbuffer, eventos); o liminalClient é o window manager/compositor
-# (janelas, temas .tpf, apps .xapp).
+# (janelas, temas .tpf, aplicativos).
 LIMINAL_SERVER_SOURCES := $(wildcard $(PROGRAMS_DIR)/liminalServer/*.rs)
 
-$(BUILD_DIR)/user/bin/liminal-server: $(LIMINAL_SERVER_SOURCES) $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/bin/liminal-server: $(BUILD_DIR)/user/bin/liminal-server.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/bin/liminal-server.elf: $(LIMINAL_SERVER_SOURCES) $(ROOT)/common/userland/linker.ld \
                                      $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name liminal_server --edition 2024 --target $(TARGET) \
@@ -100,7 +128,10 @@ $(BUILD_DIR)/user/bin/liminal-server: $(LIMINAL_SERVER_SOURCES) $(ROOT)/common/u
 
 LIMINAL_CLIENT_SOURCES := $(wildcard $(PROGRAMS_DIR)/liminalClient/*.rs)
 
-$(BUILD_DIR)/user/bin/liminal-client: $(LIMINAL_CLIENT_SOURCES) $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/bin/liminal-client: $(BUILD_DIR)/user/bin/liminal-client.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/bin/liminal-client.elf: $(LIMINAL_CLIENT_SOURCES) $(ROOT)/common/userland/linker.ld \
                                      $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name liminal_client --edition 2024 --target $(TARGET) \
@@ -113,7 +144,10 @@ $(BUILD_DIR)/user/bin/liminal-client: $(LIMINAL_CLIENT_SOURCES) $(ROOT)/common/u
 # ------------------------------------------------------------------------------
 # Utilitários Rust (common/utilities/<nome>.rs), instalados em /bin
 # ------------------------------------------------------------------------------
-$(BUILD_DIR)/user/utilities/%: $(UTILITIES_DIR)/%.rs $(ROOT)/common/userland/linker.ld \
+$(BUILD_DIR)/user/utilities/%: $(BUILD_DIR)/user/utilities/%.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/utilities/%.elf: $(UTILITIES_DIR)/%.rs $(ROOT)/common/userland/linker.ld \
                                 $(USER_API_RLIB) $(USER_RUNTIME_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) --crate-name $* --edition 2024 --target $(TARGET) \
@@ -145,7 +179,10 @@ $(BUILD_DIR)/user/libdreamcore.a: $(USER_LIBC_OBJECTS)
 # ------------------------------------------------------------------------------
 # Utilitário C: hello_c (compilado com a libc do ImagineOS)
 # ------------------------------------------------------------------------------
-$(BUILD_DIR)/user/utilities/hello_c: $(UTILITIES_DIR)/hello_c.c $(USER_CRT_OBJECTS) \
+$(BUILD_DIR)/user/utilities/hello_c: $(BUILD_DIR)/user/utilities/hello_c.elf $(DNU_PACK_BIN)
+	$(call pack_def)
+
+$(BUILD_DIR)/user/utilities/hello_c.elf: $(UTILITIES_DIR)/hello_c.c $(USER_CRT_OBJECTS) \
                                      $(ROOT)/common/userland/linker.ld
 	@mkdir -p $(BUILD_DIR)/user/c
 	$(CC) $(USER_CFLAGS) -c $< -o $(BUILD_DIR)/user/c/hello_c.o
@@ -158,7 +195,7 @@ $(BUILD_DIR)/user/utilities/hello_c: $(UTILITIES_DIR)/hello_c.c $(USER_CRT_OBJEC
 # ------------------------------------------------------------------------------
 c-app:
 	@test -n "$(APP)" || (echo "uso: make c-app APP=<nome>"; exit 1)
-	$(MAKE) -f $(lastword $(MAKEFILE_LIST)) $(BUILD_DIR)/user/c/$(APP).elf
+	$(MAKE) -f $(lastword $(MAKEFILE_LIST)) $(BUILD_DIR)/user/c/$(APP)
 
 $(BUILD_DIR)/user/c/%.elf: $(ROOT)/ramfs/home/%.c $(USER_LIBC_DIR)/include/dreamcore.h \
                            $(USER_CRT_OBJECTS) $(ROOT)/common/userland/linker.ld
@@ -166,3 +203,7 @@ $(BUILD_DIR)/user/c/%.elf: $(ROOT)/ramfs/home/%.c $(USER_LIBC_DIR)/include/dream
 	$(CC) $(USER_CFLAGS) -c $< -o $(BUILD_DIR)/user/c/$*.o
 	$(CC) $(USER_CFLAGS) -nostdlib -static -no-pie -Wl,-T$(ROOT)/common/userland/linker.ld \
 		-Wl,--build-id=none $(BUILD_DIR)/user/c/$*.o $(USER_CRT_OBJECTS) -o $@
+
+# O app C vira DEF como os demais; o ELF intermediário fica no build.
+$(BUILD_DIR)/user/c/%: $(BUILD_DIR)/user/c/%.elf $(DNU_PACK_BIN)
+	$(call pack_def)

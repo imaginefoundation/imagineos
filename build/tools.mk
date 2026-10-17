@@ -20,9 +20,14 @@ ABI_MANIFEST  := $(ROOT)/common/shared/abi/Cargo.toml
 ABI_TARGET_DIR := $(BUILD_DIR)/tools/abi-target
 ABI_RLIB      := $(ABI_TARGET_DIR)/$(HOST_TRIPLE)/release/libimagineos_abi.rlib
 
-.PHONY: tools
+# O dnu-pack converte o ELF que o toolchain emite para o contêiner DEF que o
+# kernel carrega (é o único formato de userspace aceito). O build de userland
+# depende dele, então esta etapa precisa estar pronta antes.
+.PHONY: tools dnu-pack
 
 tools: $(DFS_IMAGE_BIN) $(DNU_PACK_BIN)
+
+dnu-pack: $(DNU_PACK_BIN)
 
 $(DFS_IMAGE_BIN): $(ROOT)/common/tools/dfs-image.rs $(ROOT)/dnu_kernel/src/fs/dfs/dfs.rs \
                   $(ROOT)/dnu_kernel/src/fs/gpt.rs $(ROOT)/dnu_kernel/src/drivers/block.rs

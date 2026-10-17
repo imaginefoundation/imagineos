@@ -25,6 +25,13 @@ impl Error {
     pub const INVALID_ARGUMENT: Self = Self { code: 22 };
     pub const TOO_BIG: Self = Self { code: 7 };
     pub const NO_SPACE: Self = Self { code: 28 };
+    /// O arquivo existe mas não é um executável DEF válido.
+    pub const NO_EXECUTABLE: Self = Self { code: 8 };
+    pub const NOT_FOUND: Self = Self { code: 2 };
+    pub const PERMISSION_DENIED: Self = Self { code: 13 };
+    pub const OUT_OF_MEMORY: Self = Self { code: 12 };
+    /// Nenhum slot de processo livre (ou recurso esgotado).
+    pub const UNAVAILABLE: Self = Self { code: 11 };
 
     pub const fn code(self) -> i32 {
         self.code

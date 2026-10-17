@@ -10,7 +10,7 @@
 //! `exec`, `execve` e `spawn` compartilham a decodificação de `argv`/`envp`,
 //! feita por `ExecArguments`.
 
-use imagineos_abi::{SpawnIo, UserArg, MAX_EXEC_ARGS, MAX_EXEC_ENV, MAX_EXEC_ITEM_SIZE};
+use imagineos_abi::{SpawnIo, MAX_EXEC_ARGS, MAX_EXEC_ENV, MAX_EXEC_ITEM_SIZE};
 
 use super::trap::{TrapFrame, E2BIG, EFAULT, EINVAL};
 use super::user::{copy_struct_from_user, load_user_vector, vector_slices, Vector};
@@ -64,7 +64,7 @@ pub fn spawn_handler(frame: &mut TrapFrame) -> *mut TrapFrame {
     if argument_count > MAX_EXEC_ARGS {
         return frame.fail(E2BIG);
     }
-    let mut arguments = [UserArg::EMPTY; MAX_EXEC_ARGS];
+    let mut arguments = [[0u8; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ARGS];
     let mut argument_lengths = [0usize; MAX_EXEC_ARGS];
     if let Err(error) =
         load_user_vector(frame.rdx, argument_count, &mut arguments, &mut argument_lengths)
@@ -76,7 +76,7 @@ pub fn spawn_handler(frame: &mut TrapFrame) -> *mut TrapFrame {
     if environment_count > MAX_EXEC_ENV {
         return frame.fail(E2BIG);
     }
-    let mut environment = [UserArg::EMPTY; MAX_EXEC_ENV];
+    let mut environment = [[0u8; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ENV];
     let mut environment_lengths = [0usize; MAX_EXEC_ENV];
     if let Err(error) = load_user_vector(
         io.environment,
@@ -191,8 +191,8 @@ pub fn authenticate(frame: &mut TrapFrame) -> *mut TrapFrame {
 pub struct ExecArguments {
     path: [u8; MAX_EXEC_ITEM_SIZE],
     path_length: usize,
-    arguments: [UserArg; MAX_EXEC_ARGS],
-    environment: [UserArg; MAX_EXEC_ENV],
+    arguments: [[u8; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ARGS],
+    environment: [[u8; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ENV],
     argument_lengths: [usize; MAX_EXEC_ARGS],
     environment_lengths: [usize; MAX_EXEC_ENV],
     argument_count: usize,
@@ -204,8 +204,8 @@ impl ExecArguments {
         Self {
             path: [0; MAX_EXEC_ITEM_SIZE],
             path_length: 0,
-            arguments: [UserArg::EMPTY; MAX_EXEC_ARGS],
-            environment: [UserArg::EMPTY; MAX_EXEC_ENV],
+            arguments: [[0; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ARGS],
+            environment: [[0; MAX_EXEC_ITEM_SIZE]; MAX_EXEC_ENV],
             argument_lengths: [0; MAX_EXEC_ARGS],
             environment_lengths: [0; MAX_EXEC_ENV],
             argument_count: 0,

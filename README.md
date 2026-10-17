@@ -31,7 +31,8 @@ O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do 
 O código-fonte do kernel fica em `dnu_kernel/src/` (o Limine carrega o dzImage, que
 é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
 `common/programs/` (apps multi-módulo) e `common/utilities/` (comandos de
-arquivo único). O USTAR provê o
+arquivo único). Programas de userspace são empacotados no formato nativo **DEF**
+(magic `DNUF`) por `dnu-pack` — o kernel não carrega ELF de userspace. O USTAR provê o
 sistema de arquivos inicial em RAM e o fallback; quando existe uma partição DFS
 válida, sua árvore persistente é usada como raiz ativa. Ainda não há uma
 implementação genérica de `switch_root`.
@@ -60,7 +61,7 @@ O shell é propositalmente pequeno. Suas capacidades são:
 - **Utilitários externos:** os comandos são resolvidos via `PATH` e iniciados a
   partir de `/bin`; os utilitários incluídos são `ls`, `cat`, `grep` (busca por
   string exata), `mkdir`, `touch`, `rm`, `vi` e `globalconf`. O `argv` e as
-  variáveis de ambiente exportadas são repassados aos ELFs filhos.
+  variáveis de ambiente exportadas são repassados aos programas filhos.
 - **Fontes:** fontes PSF/PSF2 são procuradas em `ramfs/system/fonts`; glifos
   ASCII/portugueses embutidos são usados quando uma fonte carregada não tem
   determinado caractere. O cursor do prompt pisca enquanto a entrada é

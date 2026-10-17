@@ -364,6 +364,10 @@ pub fn stat(frame: &mut TrapFrame) -> *mut TrapFrame {
 // ---------------------------------------------------------------------------
 
 /// `write_file(path, len, buf, size)`: substitui o conteúdo inteiro.
+///
+/// O tamanho viaja no **quarto** argumento, que a ABI entrega em `r10` (o `rcx`
+/// é reservado pelo `int 0x80` para o endereço de retorno). A libc (`__dc_write_file`)
+/// e o runtime Rust usam o mesmo registrador, por isso a leitura é fixa aqui.
 pub fn write_file(frame: &mut TrapFrame) -> *mut TrapFrame {
     let mut path_buffer = [0u8; MAX_MUTABLE_PATH];
     let path = match path_from_user(frame.rdi, frame.rsi, &mut path_buffer) {
@@ -521,14 +525,14 @@ fn write_stat(frame: &mut TrapFrame, address: u64, metadata: crate::dfs::Metadat
         gid: metadata.gid,
         kind: u32::from(metadata.is_directory),
     };
-        if copy_struct_to_user(address, &stat) {
-            frame.ok(0)
-        } else {
-            frame.fail(EFAULT)
-        }
+    if copy_struct_to_user(address, &stat) {
+        frame.ok(0)
+    } else {
+        frame.fail(EFAULT)
     }
+}
 
-    /// Traduz um erro de sistema de arquivos para o errno negativo da ABI.
+/// Traduz um erro de sistema de arquivos para o errno negativo da ABI.
 ///
 /// A tabela vive em um único lugar (`VfsError::to_errno`), então os backends do
 /// VFS e a camada de syscall não podem divergir.

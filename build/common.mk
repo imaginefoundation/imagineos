@@ -95,6 +95,9 @@ USER_PROGRAMS           := $(BUILD_DIR)/user/sbin/init \
                            $(BUILD_DIR)/user/bin/liminal-client \
                            $(BUILD_DIR)/user/bin/liminal-server \
                            $(addprefix $(BUILD_DIR)/user/utilities/,$(USER_UTILITIES) $(USER_C_UTILITIES))
+# ELFs intermediários: o toolchain só emite ELF estático e o `dnu-pack` os
+# converte para DEF (o formato que o kernel carrega). Ficam no build, não no RAMFS.
+USER_PROGRAM_ELFS       := $(addsuffix .elf,$(USER_PROGRAMS))
 USER_CFLAGS             := -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
                            -fno-builtin -mno-red-zone -nostdinc -I$(USER_LIBC_INC) \
                            -isystem $(shell $(CC) -print-file-name=include)

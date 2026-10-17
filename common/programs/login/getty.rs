@@ -84,8 +84,12 @@ extern "C" fn _start(
             &[user_env, host_env, home_env],
         ) {
             Ok(pid) => pid,
-            Err(_) => {
-                let _ = imagineos::console::write_all(b"getty: nao foi possivel iniciar o shell\n");
+            Err(error) => {
+                // O código é o errno devolvido pelo kernel (ex.: 8 = ENOEXEC
+                // quando o arquivo não é um DEF válido).
+                let _ = imagineos::console::write_all(b"getty: nao foi possivel iniciar o shell (errno ");
+                write_number(error.code() as u32);
+                let _ = imagineos::console::write_all(b")\n");
                 continue;
             }
         };
@@ -107,6 +111,22 @@ extern "C" fn _start(
             }
         }
     }
+}
+
+/// Escreve um número decimal no console (diagnóstico do getty).
+fn write_number(mut value: u32) {
+    let mut digits = [0u8; 10];
+    let mut cursor = digits.len();
+    if value == 0 {
+        let _ = imagineos::console::write_all(b"0");
+        return;
+    }
+    while value != 0 {
+        cursor -= 1;
+        digits[cursor] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    let _ = imagineos::console::write_all(&digits[cursor..]);
 }
 
 fn read_line(output: &mut [u8], mask: bool) -> imagineos::Result<usize> {

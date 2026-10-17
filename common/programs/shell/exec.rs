@@ -672,13 +672,29 @@ impl<'a> Executor<'a> {
         let Ok(path) = core::str::from_utf8(&path_buffer[..path_length]) else {
             process::exit(2);
         };
-        if process::execve(path, &argv[..count], environment).is_err() {
-            write_error(b"shell: falha ao executar o comando\n");
-            process::exit(126);
+        match process::execve(path, &argv[..count], environment) {
+            Ok(_) => {}
+            Err(error) => {
+                // O kernel só retorna em caso de erro; distinguir o motivo
+                // importa porque `ENOEXEC` (imagem que não é DEF) e `EACCES`
+                // apontam para causas bem diferentes.
+                match error {
+                    imagineos::Error::NO_EXECUTABLE => {
+                        write_error(b"shell: arquivo nao e um executavel DEF\n")
+                    }
+                    imagineos::Error::PERMISSION_DENIED => {
+                        write_error(b"shell: permissao negada\n")
+                    }
+                    imagineos::Error::OUT_OF_MEMORY => {
+                        write_error(b"shell: memoria insuficiente\n")
+                    }
+                    _ => write_error(b"shell: falha ao executar o comando\n"),
+                }
+                process::exit(126);
+            }
         }
         process::exit(126);
     }
-
     /// Expande e lança um comando como novo processo.
     /// Resolve um nome em caminho absoluto, considerando `PATH`.
     fn resolve_command(&self, name: &[u8], output: &mut [u8; uri::MAX_PATH]) -> Option<usize> {

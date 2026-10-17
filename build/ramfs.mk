@@ -20,6 +20,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 # o dzImage e userland.mk produz os programas e as libs de userspace.
 KERNEL_MK   := $(ROOT)/build/kernel.mk
 USERLAND_MK := $(ROOT)/build/userland.mk
+TOOLS_MK    := $(ROOT)/build/tools.mk
 
 # Todo arquivo da árvore `ramfs/` é dependência do tar. Sem isto, editar um
 # arquivo de `ramfs/` (um script em `etc/`, uma fonte) não disparava a
@@ -34,6 +35,7 @@ ramfs:
 # Constrói tudo o que o USTAR empacota antes de montá-lo.
 ramfs-inputs: ramfs
 	$(MAKE) -f $(KERNEL_MK) dzimage
+	$(MAKE) -f $(TOOLS_MK) tools
 	$(MAKE) -f $(USERLAND_MK) user-programs user-libs \
 		$(BUILD_DIR)/user/utilities/hello_c
 

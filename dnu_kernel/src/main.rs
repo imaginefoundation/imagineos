@@ -26,10 +26,9 @@ mod boot_info;
 use usr::config;
 #[path = "fs/dfs/dfs.rs"]
 mod dfs;
-#[path = "exec/def.rs"]
-pub mod def;
-#[path = "exec/elf.rs"]
-pub mod elf;
+#[path = "exec/mod.rs"]
+pub mod exec;
+pub use exec::process;
 #[path = "console/mod.rs"]
 mod console;
 #[path = "arch/x86_64/fpu.rs"]
@@ -58,9 +57,6 @@ mod paging;
 mod permissions;
 #[path = "drivers/acpi.rs"]
 mod acpi;
-#[path = "exec/mod.rs"]
-pub mod exec;
-pub use exec::process;
 #[path = "fs/ramfs.rs"]
 mod ramfs;
 #[path = "dev/display/surface.rs"]
@@ -261,7 +257,7 @@ fn start_init() -> ! {
     };
     console_write("Loading /sbin/init as PID 1 in ring 3\n");
     if process::init(&[(init_program, 1)]).is_err() {
-        console_write("ELF loader failed; stopping safely\n");
+        console_write("DEF loader failed; stopping safely\n");
         crate::halt();
     }
     time::configure_timer_interrupt();

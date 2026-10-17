@@ -1,11 +1,12 @@
 //! **dnu-pack** — empacotador ELF → DEF (Dreamcore Executable Format).
 //!
-//! O ImagineOS carrega binários `.xapp` no formato DEF (ver
+//! O ImagineOS carrega binários no formato DEF (ver
 //! `common/shared/abi/src/def.rs`). O toolchain de userspace, porém, produz ELF
 //! estático (`x86_64-unknown-none`) porque é o que o `rustc`/`ld` sabem emitir.
 //! Este utilitário é a ponte: lê o ELF já linkado, extrai os segmentos `PT_LOAD`
 //! e reescreve tudo em um contêiner DEF que o loader do kernel aceita, validando
-//! o resultado com a mesma [`validate_image`] usada pelo kernel.
+//! o resultado com a mesma [`validate_image`] usada pelo kernel. Depois disso o
+//! ELF original não é usado: o kernel lê apenas DEF.
 //!
 //! É um programa de **host** (roda no Linux, não dentro do ImagineOS), então não
 //! depende de nada do kernel além do crate `imagineos_abi`, que é `no_std` e
@@ -15,15 +16,16 @@
 //! Uso:
 //!
 //! ```text
-//!   dnu-pack <entrada.elf> <saida.xapp> [--type app|server|driver|runtime]
-//!                                        [--caps fs,net,display,...]
-//!                                        [--stack 1048576]
-//!                                        [--stack-guard]
+//!   dnu-pack <entrada.elf> <saida> [--type app|server|driver|runtime]
+//!                                  [--caps fs,net,display,...]
+//!                                  [--stack 1048576]
+//!                                  [--stack-guard]
 //! ```
 //!
-//! Sem `--caps`, o binário é empacotado como um `App` sem capacidades
-//! declaradas (o kernel decide o default). Sem `--stack`, usa a pilha padrão
-//! [`DEFAULT_STACK_SIZE`].
+//! A saída **não** leva extensão: os programas são instalados como `/bin/ls`,
+//! `/sbin/init` etc. Sem `--caps`, o binário é empacotado como um `App` sem
+//! capacidades declaradas (o kernel decide o default). Sem `--stack`, usa a
+//! pilha padrão [`DEFAULT_STACK_SIZE`].
 
 // Como o kernel, este arquivo não usa a `std`; mas por ser host, ligamos `std`
 // para ter acesso a `fs`/`args` sem `unsafe` de syscalls cruas. O `no_std` aqui
@@ -231,7 +233,7 @@ fn parse_elf(bytes: &[u8]) -> Result<(u64, Vec<LoadSegment>), String> {
 // ==============================================================================
 /// Empacota um ELF em um contêiner DEF completo. `binary_type` e `capabilities`
 /// são política do empacotador; `stack_size`/`stack_guard` vêm da linha de
-/// comando. Devolve os bytes do `.xapp` prontos para gravar.
+/// comando. Devolve os bytes do arquivo DEF prontos para gravar.
 fn pack_elf(
     elf: &[u8],
     binary_type: DefType,
@@ -441,7 +443,7 @@ fn parse_args() -> Result<Options, String> {
 
     Ok(Options {
         input: input.ok_or("faltou o arquivo de entrada (.elf)")?,
-        output: output.ok_or("faltou o arquivo de saída (.xapp)")?,
+        output: output.ok_or("faltou o arquivo de saída")?,
         binary_type,
         capabilities,
         stack_size,
@@ -451,7 +453,7 @@ fn parse_args() -> Result<Options, String> {
 
 fn print_usage() {
     eprintln!(
-        "uso: dnu-pack <entrada.elf> <saida.xapp> [opções]\n\
+        "uso: dnu-pack <entrada.elf> <saida> [opções]\n\
          \n\
          opções:\n\
            --type app|server|driver|runtime   tipo do binário DEF (padrão: app)\n\

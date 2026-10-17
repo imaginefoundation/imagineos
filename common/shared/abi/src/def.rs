@@ -1,12 +1,17 @@
-//! Formato **DEF** (Dreamcore Executable Format) — o contêiner dos binários
-//! `.xapp` do ImagineOS.
+//! Formato **DEF** (Dreamcore Executable Format) — o contêiner executável
+//! nativo do ImagineOS.
 //!
 //! O DEF é o formato executável nativo do ImagineOS. Ele foi desenhado para
 //! ser **zero-copy**: o cabeçalho é uma estrutura de tamanho fixo, alinhada a 8
 //! bytes, lida diretamente dos bytes do arquivo (um `#[repr(C)]` que o loader
 //! do kernel pode sobrepor na página carregada sem copiar nem realocar nada).
 //!
-//! Diferente do ELF, o DEF:
+//! Os arquivos DEF **não** usam extensão: são instalados como `/bin/ls`,
+//! `/sbin/init` e assim por diante. A extensão `.xapp` pertence ao pacote de
+//! aplicação do framework Liminal, que é um artefato separado (ver
+//! `documentation/appframework.md`).
+//!
+//! Comparado a formatos genéricos como o ELF, o DEF:
 //!
 //! * não tem *section headers* (a visão de linking não importa em tempo de
 //!   execução) — só a visão de execução, uma tabela compacta de segmentos;
@@ -314,7 +319,7 @@ pub enum DefError {
 /// É a checagem *estrutural* comum a kernel e ferramenta. Não valida a
 /// assinatura criptográfica (isso é política do kernel, em [`DefHeader::signature`]).
 ///
-/// * `image` são os bytes completos do arquivo `.xapp`;
+/// * `image` são os bytes completos do arquivo DEF;
 /// * `abi_version` é a ABI do SO que está carregando (o kernel passa
 ///   [`crate::ABI_VERSION`]; a ferramenta passa a mesma para simular o loader);
 /// * `native_arch` é a arquitetura do SO.
