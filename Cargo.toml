@@ -15,7 +15,7 @@ resolver = "2"
 
 [dependencies]
 limine = "0.5.0"
-imagineos-abi = { path = "common/shared/abi" }
+imagineos_abi = { path = "common/shared/abi" }
 
 [[bin]]
 name = "imagineos-dnu-kernel"
