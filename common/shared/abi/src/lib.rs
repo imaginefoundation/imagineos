@@ -26,6 +26,36 @@ pub const MAX_READ_BUFFER: usize = MAX_IO_SIZE;
 /// Conteúdo máximo aceito por `write_file`.
 pub const MAX_WRITE_FILE_SIZE: usize = MAX_IO_SIZE;
 
+/// Retrato do sistema devolvido por `SYS_SYSTEM_INFO`.
+///
+/// Todos os campos são valores já calculados pelo kernel: o userspace não tem
+/// como consultar o TSC, o alocador de frames ou o escalonador diretamente, e
+/// derivar essas informações de syscalls avulsas daria números inconsistentes
+/// entre si (uptime medido antes e RAM medida depois, por exemplo).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemInfo {
+    /// Microssegundos desde o boot, do relógio de TSC.
+    pub uptime_microseconds: u64,
+    /// Frequência do TSC em Hz (0 quando não calibrada).
+    pub tsc_frequency: u64,
+    /// RAM utilizável total, em bytes.
+    pub memory_total: u64,
+    /// RAM ainda livre, em bytes.
+    pub memory_free: u64,
+    /// Largura e altura do framebuffer ativo (0 se não houver).
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    /// Processos ativos no momento da chamada.
+    pub process_count: u32,
+    /// Prioridade do processo que fez a chamada (ver `Priority` no kernel).
+    pub priority: u32,
+    /// PID do processo que fez a chamada.
+    pub pid: u64,
+    /// Versão da ABI do kernel.
+    pub abi_version: u64,
+}
+
 /// Flags do `waitpid`: `WNOHANG` — não bloqueia; devolve 0 se nenhum filho
 /// terminou. Necessário para supervisores de serviços (Horust) e shells.
 pub const WNOHANG: i64 = 1;
@@ -109,6 +139,10 @@ pub const SIGNAL_IGNORE: u64 = 1;
 
 pub const PROCESS_RUNNING: u32 = 1;
 pub const PROCESS_STOPPED: u32 = 2;
+/// Bloqueado em `waitpid` esperando um filho.
+pub const PROCESS_WAITING: u32 = 3;
+/// Terminou, mas o pai ainda não coletou o status.
+pub const PROCESS_ZOMBIE: u32 = 4;
 // Large enough for a shell plus a handful of pipeline stages. Each slot costs a
 // 64 KiB kernel stack (see `KERNEL_STACKS`), so this is not free memory.
 pub const MAX_PROCESSES: usize = 16;
@@ -259,9 +293,17 @@ pub struct UserStat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: u64,
+    /// Um dos `PROCESS_*`.
     pub state: u32,
     pub pending_signals: u32,
     pub name: [u8; PROCESS_NAME_SIZE],
+    /// Nível de prioridade (0 = mais baixo, ver `Priority` no kernel).
+    pub priority: u32,
+    /// 1 quando este é o processo em execução no momento da chamada.
+    pub running: u32,
+    /// Ticks de CPU que a fatia deste processo concede por vez.
+    pub quantum_ticks: u32,
+    pub _reserved: u32,
 }
 
 #[repr(C)]
@@ -327,6 +369,10 @@ impl Default for ProcessInfo {
             state: 0,
             pending_signals: 0,
             name: [0; PROCESS_NAME_SIZE],
+            priority: 0,
+            running: 0,
+            quantum_ticks: 0,
+            _reserved: 0,
         }
     }
 }

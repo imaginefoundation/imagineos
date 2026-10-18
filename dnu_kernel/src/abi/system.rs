@@ -20,6 +20,37 @@ pub fn identity(frame: &mut TrapFrame) -> *mut TrapFrame {
     }
 }
 
+/// `system_info(&SystemInfo)`: retrato do sistema em uma única chamada.
+///
+/// O kernel é quem tem acesso ao TSC, ao alocador de frames, ao framebuffer e ao
+/// escalonador; juntar tudo aqui garante que os números sejam coerentes entre si
+/// (o userspace não pode medir uptime nem RAM por conta própria).
+pub fn system_info(frame: &mut TrapFrame) -> *mut TrapFrame {
+    let (memory_total, memory_free) = crate::memory::usage();
+    let (framebuffer_width, framebuffer_height) = crate::framebuffer::description()
+        .map_or((0, 0), |description| {
+            (description.width as u32, description.height as u32)
+        });
+    let (_, _, process_count) = process::snapshot_with_count();
+    let info = imagineos_abi::SystemInfo {
+        uptime_microseconds: crate::time::elapsed_microseconds().unwrap_or(0),
+        tsc_frequency: crate::time::tsc_frequency(),
+        memory_total,
+        memory_free,
+        framebuffer_width,
+        framebuffer_height,
+        process_count: process_count as u32,
+        priority: process::current_priority() as u32,
+        pid: process::current_pid() as u64,
+        abi_version: imagineos_abi::ABI_VERSION,
+    };
+    if copy_struct_to_user(frame.rdi, &info) {
+        frame.ok(0)
+    } else {
+        frame.fail(EFAULT)
+    }
+}
+
 /// `write(fd, buf, len)` sem descritor: escreve direto no console.
 pub fn console_write(frame: &mut TrapFrame) -> *mut TrapFrame {
     let length = (frame.rsi as usize).min(MAX_CONSOLE_WRITE);

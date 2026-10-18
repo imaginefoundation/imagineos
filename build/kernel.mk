@@ -20,7 +20,7 @@ kernel: $(KERNEL)
 $(KERNEL): $(wildcard $(ROOT)/dnu_kernel/src/**/*.rs) $(ROOT)/dnu_kernel/linker.ld $(FONT_ASSET)
 	$(CARGO) build --release --target $(TARGET) --bin imagineos-dnu-kernel \
 		--manifest-path $(ROOT)/Cargo.toml \
-		--config 'target.x86_64-unknown-none.rustflags=["-C","link-arg=-Tdnu_kernel/linker.ld","-C","relocation-model=static"]' \
+		--config 'target.x86_64-unknown-none.rustflags=["-C","link-arg=-T$(ROOT)/dnu_kernel/linker.ld","-C","relocation-model=static"]' \
 		$(if $(KERNEL_FEATURES),--features $(KERNEL_FEATURES),)
 
 # ------------------------------------------------------------------------------

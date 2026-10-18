@@ -1,5 +1,6 @@
 #![allow(dead_code)]
-//! Standalone tests for the syscall trap frame and ABI constants.
+//! Standalone tests for the syscall trap frame, the IDT vector table and the
+//! kernel clock.
 //!
 //! The `TrapFrame` layout is a binary contract with `arch/x86_64/idt.rs`: the
 //! stub pushes registers in a fixed order and the hardware pushes the iretq
@@ -8,11 +9,24 @@
 //! Run with:
 //! `rustup run stable rustc --edition 2021 --test dnu_kernel/src/tests/trap.rs -o /tmp/trap-tests && /tmp/trap-tests`
 
+// `drivers/time.rs` importa `crate::abi::trap`; o alias abaixo satisfaz esse
+// caminho para que o mapa de vetores e a matemática do relógio sejam testáveis
+// no host, sem bootar.
 #[path = "../abi/trap.rs"]
-mod trap;
+pub mod trap_impl;
+
+pub mod abi {
+    pub use super::trap_impl as trap;
+}
+
+#[path = "time_math.rs"]
+pub mod time;
+
+#[path = "../drivers/time.rs"]
+mod drivers_time;
 
 use std::mem::{offset_of, size_of};
-use trap::TrapFrame;
+use trap_impl::TrapFrame;
 
 #[test]
 fn trap_frame_matches_the_int_stub_push_order() {
@@ -96,4 +110,56 @@ fn empty_frame() -> TrapFrame {
         rsp: 0,
         ss: 0,
     }
+}
+
+#[test]
+fn timer_vector_is_not_an_exception_vector() {
+    // O vetor 0x20 é o único endereço livre para o IRQ0: os vetores 0..=31 são
+    // exceções da CPU e 0x80 é a syscall. Registrar o timer em 0x0e faria o IRQ0
+    // ser despachado como `#PF` (vetor 14) e matar o processo em execução — era
+    // exatamente o que acontecia: o contador de ticks ficava em zero porque o
+    // handler do timer nunca era alcançado.
+    assert_eq!(drivers_time::timer_vector(), 0x20);
+    assert!(drivers_time::timer_vector() > 31);
+    assert_ne!(drivers_time::timer_vector(), 0x80);
+}
+
+#[test]
+fn clock_reports_zero_ticks_before_the_timer_is_armed() {
+    // Um tick só conta quando o PIT realmente interrompe: a leitura precisa
+    // começar em zero, e não com um valor residual de boot.
+    assert_eq!(drivers_time::timer_ticks(), 0);
+}
+
+#[test]
+fn elapsed_time_is_unavailable_until_the_tsc_frequency_is_known() {
+    // Sem frequência calibrada o kernel não pode converter ciclos em tempo; o
+    // log degrada para `[time?]` em vez de inventar um número.
+    assert_eq!(time::elapsed_microseconds(1_000, 0), None);
+    // 1_000_000 ciclos a 1 MHz = exatamente 1 s.
+    assert_eq!(
+        time::elapsed_microseconds(1_000_000, 1_000_000),
+        Some(1_000_000)
+    );
+    // A 1 kHz, 999 ciclos são 999 ms (999_000 us) — a conversão não pode
+    // confundir ciclos com microssegundos.
+    assert_eq!(time::elapsed_microseconds(999, 1_000), Some(999_000));
+}
+
+#[test]
+fn microseconds_conversion_keeps_sub_millisecond_resolution() {
+    // 3_403_477_708 Hz (a frequência medida no QEMU) e 1 ms de ciclos: a
+    // conversão precisa devolver 1000 us exatos, sem truncar para 0.
+    let frequency = 3_403_477_708u64;
+    let one_millisecond_of_cycles = frequency / 1000;
+    assert_eq!(
+        time::elapsed_microseconds(one_millisecond_of_cycles, frequency),
+        Some(999)
+    );
+    // E não pode estourar no primeiro ciclo, o que arredondaria para 0 us.
+    assert_eq!(time::elapsed_microseconds(1, frequency), Some(0));
+    assert_eq!(
+        time::elapsed_microseconds(frequency, frequency),
+        Some(1_000_000)
+    );
 }

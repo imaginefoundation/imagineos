@@ -60,6 +60,52 @@ pub(crate) static KERNEL_STACKS: SharedStacks = SharedStacks(UnsafeCell::new(Ker
     [[0; KERNEL_STACK_SIZE]; MAX_PROCESSES],
 )));
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum Priority {
+    /// Trabalho de segundo plano: cede a CPU para qualquer outra prioridade.
+    Idle = 0,
+    Low = 1,
+    Normal = 2,
+    High = 3,
+    /// Supervisor do sistema (PID 1): só perde a CPU para o `Realtime`.
+    Supervisor = 4,
+    /// Display/servidores híbridos e trabalho crítico de latência.
+    Realtime = 5,
+}
+
+impl Priority {
+    /// Prioridade padrão de um processo criado por `exec`/`spawn`/`fork`.
+    pub const DEFAULT: Self = Self::Normal;
+
+    /// Quantum (em ticks do timer) de cada nível de prioridade.
+    ///
+    /// Prioridade maior roda **mais tempo por fatia** e é escolhida antes, então
+    /// o efeito combinado é que um processo de prioridade alta progride muito
+    /// mais rápido que um de prioridade baixa sob carga.
+    pub const fn quantum_ticks(self) -> u64 {
+        match self {
+            Self::Idle => 1,
+            Self::Low => 5,
+            Self::Normal => 10,
+            Self::High => 15,
+            Self::Supervisor => 20,
+            Self::Realtime => 25,
+        }
+    }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Idle,
+            1 => Self::Low,
+            2 => Self::Normal,
+            3 => Self::High,
+            4 => Self::Supervisor,
+            _ => Self::Realtime,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Process {
     pub(crate) pid: usize,
@@ -83,6 +129,11 @@ pub struct Process {
     /// milissegundo) em vez de rodar o quantum inteiro — o filho do `fork`
     /// retomava sempre no mesmo `rip` e parecia travado.
     pub(crate) quantum: u64,
+    /// Prioridade de escalonamento: decide quem é escolhido primeiro e quanto
+    /// tempo cada processo roda por fatia (ver [`Priority`]).
+    pub(crate) priority: Priority,
+    /// Ticks já usados na fatia atual; zerado a cada troca de contexto.
+    pub(crate) slice_used: u64,
     pub(crate) allows_disk_install: bool,
     pub(crate) uid: u32,
     pub(crate) gid: u32,
@@ -110,6 +161,8 @@ impl Process {
         exit_status: 0,
         waiting_for: 0,
         quantum: 0,
+        priority: Priority::DEFAULT,
+        slice_used: 0,
         allows_disk_install: false,
         uid: 0,
         gid: 0,
@@ -340,33 +393,70 @@ pub fn timer_tick(frame: *mut TrapFrame) -> *mut TrapFrame {
     if any_waiting() {
         return frame;
     }
-    let has_other_runnable = scheduler
-        .processes
-        .iter()
-        .enumerate()
-        .any(|(index, process)| {
-            index != current
-                && process.active
-                && !process.stopped
-                && !process.zombie
-                && process.waiting_for == 0
-        });
-    if !has_other_runnable {
-        return frame;
-    }
 
-    // Quantum **por processo**: só troca depois de `TIMER_QUANTUM_TICKS` ticks
-    // deste processo. Preemptar a cada tick (10 ms) custa caro — cada troca
-    // salva e restaura o estado FPU e recarrega o CR3 — e deixava pouco tempo
-    // útil para o processo em execução, a ponto de um filho recém-criado por
-    // `fork` não conseguir executar sua primeira instrução.
+    // Escalonamento preemptivo por prioridade: a cada tick o processo em
+    // execução **consome um tick da sua fatia** e o escalonador reavalia quem
+    // deve rodar. Dois motivos para trocar imediatamente:
+    //
+    // 1. fatia esgotada (o processo usou `quantum_ticks()` da sua prioridade);
+    // 2. chegou (ou voltou a ser elegível) um processo de prioridade **maior**,
+    //    que tem direito à CPU agora — é isto que torna a preempção sensível à
+    //    prioridade e não apenas temporal.
+    //
+    // A escolha em si vive em `select_candidate`, que é a mesma função usada
+    // pelas trocas voluntárias (`yield`, `exit`), então as duas rotas não podem
+    // divergir.
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
-    scheduler.processes[current].quantum += 1;
-    if scheduler.processes[current].quantum < crate::time::TIMER_QUANTUM_TICKS {
+    let current = scheduler.current;
+    let priority = scheduler.processes[current].priority;
+    scheduler.processes[current].slice_used += 1;
+    let slice_exhausted = scheduler.processes[current].slice_used >= priority.quantum_ticks();
+
+    let Some(candidate) = select_candidate(scheduler) else {
+        // Ninguém mais elegível: o processo atual continua e a fatia zera para
+        // que ele não seja preemptado no próximo tick por um contador velho.
+        if slice_exhausted {
+            scheduler.processes[current].slice_used = 0;
+        }
+        return frame;
+    };
+    let higher_priority = scheduler.processes[candidate].priority > priority;
+    if !slice_exhausted && !higher_priority {
         return frame;
     }
-    scheduler.processes[current].quantum = 0;
     schedule(frame, false)
+}
+
+/// Escolhe o próximo processo a rodar: maior prioridade primeiro; entre
+/// processos de mesma prioridade, round-robin a partir do atual.
+///
+/// Elegível é o processo ativo, não parado, não zumbi e não bloqueado em
+/// `waitpid`. Um zumbi espera ser coletado, e um processo bloqueado em
+/// `waitpid` gastaria a fatia reavaliando a mesma espera — o filho que ele
+/// aguarda nunca seria escalonado no meio disso. Devolve `None` quando só o
+/// processo atual é elegível.
+fn select_candidate(scheduler: &Scheduler) -> Option<usize> {
+    let current = scheduler.current;
+    let mut best: Option<usize> = None;
+    for distance in 1..=MAX_PROCESSES {
+        let index = (current + distance) % MAX_PROCESSES;
+        let process = &scheduler.processes[index];
+        if !is_runnable(process) {
+            continue;
+        }
+        // Desempate por round-robin: a varredura começa em `current + 1`, então
+        // o primeiro de cada nível de prioridade encontrado é o que está há
+        // mais tempo sem rodar.
+        match best {
+            Some(best_index) if scheduler.processes[best_index].priority >= process.priority => {}
+            _ => best = Some(index),
+        }
+    }
+    best
+}
+
+fn is_runnable(process: &Process) -> bool {
+    process.active && !process.stopped && !process.zombie && process.waiting_for == 0
 }
 
 /// Indica se algum processo está bloqueado em `waitpid`.
@@ -393,6 +483,15 @@ pub fn any_waiting() -> bool {
 /// Isto é o comportamento do UNIX e o que permite que `$?` funcione depois que
 /// o filho já morreu.
 pub fn exit_current(frame: *mut TrapFrame, status: i32) -> *mut TrapFrame {
+    // O init é o supervisor do sistema: encerrá-lo deixaria a máquina sem PID 1
+    // (ninguém coleta zumbis, reinicia serviços ou desliga). Ver `crate::init`.
+    if crate::init::protection::can_exit(current_pid()).is_err() {
+        crate::console_write("init: exit refused (PID 1 is the system supervisor)\n");
+        unsafe {
+            (*frame).rax = crate::abi::trap::EPERM as u64;
+        }
+        return frame;
+    }
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
     scheduler.processes[scheduler.current].exit_status = status;
     schedule(frame, true)
@@ -423,7 +522,9 @@ pub fn send_signal(pid: usize, signal: u64) -> i64 {
     if sender_uid != 0 && sender_uid != process.uid {
         return -1;
     }
-    if process.pid == 1 {
+    // Nem root pode matar o init: o supervisor precisa sobreviver para
+    // supervisionar. Ver `crate::init::protection`.
+    if crate::init::protection::can_signal(process.pid, signal).is_err() {
         return -1;
     }
     process.pending_signals |= 1u64 << signal;
@@ -539,23 +640,58 @@ pub fn deliver_pending_signal(frame: *mut TrapFrame) -> *mut TrapFrame {
 }
 
 pub fn snapshot() -> ([imagineos_abi::ProcessInfo; MAX_PROCESSES], usize) {
+    let (processes, count, _) = snapshot_with_count();
+    (processes, count)
+}
+
+/// Como [`snapshot`], mas também devolve o índice do processo em execução.
+///
+/// `top` precisa distinguir o processo que está rodando agora dos demais, e essa
+/// informação só existe no escalonador.
+pub fn snapshot_with_count() -> ([imagineos_abi::ProcessInfo; MAX_PROCESSES], usize, usize) {
     let scheduler = unsafe { &*SCHEDULER.0.get() };
+    let current = scheduler.current;
     let mut result = [imagineos_abi::ProcessInfo::default(); MAX_PROCESSES];
     let mut count = 0;
-    for process in scheduler.processes.iter().filter(|process| process.active) {
+    let mut current_index = usize::MAX;
+    for (index, process) in scheduler.processes.iter().enumerate() {
+        if !process.active {
+            continue;
+        }
+        if index == current {
+            current_index = count;
+        }
         result[count] = imagineos_abi::ProcessInfo {
             pid: process.pid as u64,
-            state: if process.stopped {
-                imagineos_abi::PROCESS_STOPPED
-            } else {
-                imagineos_abi::PROCESS_RUNNING
-            },
+            state: process_state(process),
             pending_signals: process.pending_signals as u32,
             name: process.name,
+            priority: process.priority as u32,
+            running: u32::from(index == current),
+            quantum_ticks: process.priority.quantum_ticks() as u32,
+            _reserved: 0,
         };
         count += 1;
     }
-    (result, count)
+    (result, count, current_index)
+}
+
+fn process_state(process: &Process) -> u32 {
+    if process.zombie {
+        imagineos_abi::PROCESS_ZOMBIE
+    } else if process.stopped {
+        imagineos_abi::PROCESS_STOPPED
+    } else if process.waiting_for != 0 {
+        imagineos_abi::PROCESS_WAITING
+    } else {
+        imagineos_abi::PROCESS_RUNNING
+    }
+}
+
+/// Prioridade do processo em execução.
+pub fn current_priority() -> u8 {
+    let scheduler = unsafe { &*SCHEDULER.0.get() };
+    scheduler.processes[scheduler.current].priority as u8
 }
 
 /// `schedule` que também informa se houve troca de processo.
@@ -615,32 +751,26 @@ fn schedule(frame: *mut TrapFrame, exiting: bool) -> *mut TrapFrame {
         }
     }
 
-    for distance in 1..=MAX_PROCESSES {
-        let candidate = (current + distance) % MAX_PROCESSES;
-        // Um zumbi não é escalonável (espera ser coletado), e um processo
-        // bloqueado em `waitpid` também não: se ele fosse escolhido, gastaria o
-        // seu quantum reavaliando o mesmo `waitpid`, e o filho que ele espera
-        // nunca seria escalonado no meio disso. O `waitpid` limpa `waiting_for`
-        // quando o alvo termina, então o pai volta a ser elegível nesse ponto.
-        if scheduler.processes[candidate].active
-            && !scheduler.processes[candidate].stopped
-            && !scheduler.processes[candidate].zombie
-            && scheduler.processes[candidate].waiting_for == 0
-        {
-            scheduler.current = candidate;
-            let next = scheduler.processes[candidate];
-            let address_space = next.address_space.expect("process address space");
-            let kernel_stack_top = unsafe {
-                (*KERNEL_STACKS.0.get()).0[candidate].as_ptr() as u64 + KERNEL_STACK_SIZE as u64
-            };
-            gdt::set_kernel_stack(kernel_stack_top);
-            paging::switch(address_space);
-            // Restaura o estado FPU/SSE do processo que vai entrar na CPU.
-            unsafe {
-                fpu::restore(scheduler.processes[candidate].fpu_state.as_ptr());
-            }
-            return next.frame;
+    // A escolha é a mesma do caminho preemptivo: prioridade mais alta primeiro,
+    // round-robin entre iguais. `schedule` também roda no `yield`, no `exit` e
+    // quando um filho fica pronto, então manter uma única função garante que a
+    // política não dependa de quem pediu a troca.
+    if let Some(candidate) = select_candidate(scheduler) {
+        scheduler.current = candidate;
+        // Fatia nova: o processo escolhido começa com o contador de ticks zerado.
+        scheduler.processes[candidate].slice_used = 0;
+        let next = scheduler.processes[candidate];
+        let address_space = next.address_space.expect("process address space");
+        let kernel_stack_top = unsafe {
+            (*KERNEL_STACKS.0.get()).0[candidate].as_ptr() as u64 + KERNEL_STACK_SIZE as u64
+        };
+        gdt::set_kernel_stack(kernel_stack_top);
+        paging::switch(address_space);
+        // Restaura o estado FPU/SSE do processo que vai entrar na CPU.
+        unsafe {
+            fpu::restore(scheduler.processes[candidate].fpu_state.as_ptr());
         }
+        return next.frame;
     }
 
     crate::kernel_halt()
@@ -939,6 +1069,10 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
         exit_status: 0,
         waiting_for: 0,
         quantum: 0,
+        // O filho herda a prioridade do pai (como o nice(2) do POSIX, que
+        // preserva o nível na criação).
+        priority: parent.priority,
+        slice_used: 0,
         allows_disk_install: parent.allows_disk_install,
         uid: parent.uid,
         gid: parent.gid,
@@ -956,8 +1090,8 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
         fpu_state,
     };
     scheduler.count = scheduler.count.max(slot + 1);
-    // O filho começa com o quantum cheio (o campo já é inicializado em 0),
-    // garantindo que ele execute antes de o timer pedir a troca.
+    // O filho começa com a fatia zerada, garantindo que ele execute o quantum
+    // inteiro da sua prioridade antes de o timer pedir a troca.
     scheduler.processes[slot].quantum = 0;
     unsafe {
         (*frame).rax = pid as u64;
@@ -1079,7 +1213,8 @@ fn reap_child(parent_pid: usize, wanted: i64, status_pointer: u64) -> (Option<us
                 continue;
             }
             found_any = true;
-            if process.zombie && collected.is_none() {
+            if process.zombie && collected.is_none() && crate::init::protection::can_be_reaped(process.pid)
+            {
                 collected = Some((process.pid, process.exit_status));
             }
         }
@@ -1237,7 +1372,7 @@ fn next_pending_signal(pending: u64) -> Option<u64> {
     .find(|signal| pending & (1u64 << signal) != 0)
 }
 
-fn is_terminating_signal(signal: u64) -> bool {
+pub fn is_terminating_signal(signal: u64) -> bool {
     matches!(
         signal,
         imagineos_abi::SIGNAL_HUP

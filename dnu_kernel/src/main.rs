@@ -23,12 +23,17 @@ pub mod block;
 mod boot;
 #[path = "boot/boot_info.rs"]
 mod boot_info;
+#[path = "boot/subsystems.rs"]
+mod subsystems;
+use subsystems::Subsystem;
 use usr::config;
 #[path = "fs/dfs/dfs.rs"]
 mod dfs;
 #[path = "exec/mod.rs"]
 pub mod exec;
 pub use exec::process;
+#[path = "init/mod.rs"]
+pub mod init;
 #[path = "console/mod.rs"]
 mod console;
 #[path = "arch/x86_64/fpu.rs"]
@@ -107,6 +112,7 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     boot::mask_legacy_pic();
     gdt::init();
     idt::init();
+    subsystems::mark_ready(Subsystem::DescriptorTables);
 
     let frame_count = memory::init(
         unsafe { boot_info.memory_entries() },
@@ -120,6 +126,7 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     unsafe {
         core::ptr::write_bytes(boot_frame.virtual_address, 0, 4096);
     }
+    subsystems::mark_ready(Subsystem::Memory);
     framebuffer::init(
         (!boot_info.framebuffer.is_null())
             .then(|| unsafe { &*boot_info.framebuffer })
@@ -134,7 +141,10 @@ pub extern "C" fn kernel_entry(boot_info: *const boot_info::BootInfo) -> ! {
     mouse::init();
     console_write("ImagineOS Astrid w/ Dreamcore Kernel\n");
     report_boot_frames(frame_count, &boot_frame);
+    report_clock();
+    subsystems::mark_ready(Subsystem::Console);
     acpi::init(boot_info.rsdp_address, boot_info.hhdm_offset);
+    subsystems::mark_ready(Subsystem::Acpi);
 
     // Referência única aos globais de I/O da ABI: mantê-los vivos mesmo quando
     // nenhuma syscall é compilada no binário (builds mínimos/testes).
@@ -153,6 +163,20 @@ fn report_boot_frames(frame_count: usize, boot_frame: &memory::Frame) {
     console_write("\n");
 }
 
+/// Anuncia o relógio relativo de alta precisão (TSC) usado nos logs.
+fn report_clock() {
+    let frequency = time::tsc_frequency();
+    if frequency == 0 {
+        console_write("Clock: TSC frequency unavailable; logs will show [time?]\n");
+        return;
+    }
+    console_write("Clock: TSC ");
+    console_number(frequency / 1_000_000);
+    console_write(".");
+    console_number(frequency % 1_000_000);
+    console_write(" MHz; log timestamps are microseconds since boot\n");
+}
+
 /// Inicializa o disco ATA primário e relata o estado da tabela GPT.
 ///
 /// Devolve `true` quando há um disco utilizável — o RAMFS usa isso para expor
@@ -169,6 +193,7 @@ fn probe_storage() -> bool {
     console_number(sectors);
     console_write("\n");
     report_dfs_partition();
+    subsystems::mark_ready(Subsystem::Storage);
     true
 }
 
@@ -206,13 +231,24 @@ fn mount_root_filesystems(boot_info: &boot_info::BootInfo, disk_ready: bool) {
     };
     ramfs::mount(ramfs_image);
     ramfs::set_block_disk_present(disk_ready);
+    subsystems::mark_ready(Subsystem::Ramfs);
     match dfs::mount_primary() {
-        Ok(Some(_)) => console_write("DFS persistent root mounted successfully\n"),
-        Ok(None) => console_write("No DFS partition; continuing with RAMFS root\n"),
-        Err(_) => console_write("DFS mount or journal recovery failed; using RAMFS root\n"),
+        Ok(Some(_)) => {
+            console_write("DFS persistent root mounted successfully\n");
+            subsystems::mark_ready(Subsystem::Dfs);
+        }
+        Ok(None) => {
+            console_write("No DFS partition; continuing with RAMFS root\n");
+            subsystems::mark_unavailable(Subsystem::Dfs);
+        }
+        Err(_) => {
+            console_write("DFS mount or journal recovery failed; using RAMFS root\n");
+            subsystems::mark_unavailable(Subsystem::Dfs);
+        }
     }
     load_global_config();
     load_font();
+    subsystems::mark_ready(Subsystem::Configuration);
 }
 
 /// Localiza o módulo `initramfs.img` carregado pelo Limine.
@@ -260,8 +296,11 @@ fn start_init() -> ! {
         console_write("DEF loader failed; stopping safely\n");
         crate::halt();
     }
+    subsystems::mark_ready(Subsystem::InitProcess);
     time::configure_timer_interrupt();
-    console_write("Timer configured; preemption activates on the first ring-3 entry\n");
+    subsystems::mark_ready(Subsystem::Timer);
+    console_write("Timer configured; preemptive priority scheduling active\n");
+    subsystems::report();
     // Interrupts stay disabled here on purpose. `process::start` enters ring 3
     // through an iretq whose saved RFLAGS has IF=1, so the timer can only fire
     // once a valid user trap frame is on the stack.

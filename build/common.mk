@@ -65,7 +65,7 @@ RAMFS_ROOT     := $(ROOT)/ramfs
 RAMFS_DIRS     := bin dev etc sbin home system/fonts system/install tmp usr
 
 # Programas de usuário: os fontes vivem em common/ (programs/ e utilities/).
-USER_UTILITIES   := cat dmesg distroinstall fdtest forktest globalconf grep kill ls mkdir ps rm shutdown su sudo touch uname vi hello
+USER_UTILITIES   := cat dmesg distroinstall fdtest forktest globalconf grep kill ls mkdir ps rm shutdown su sudo touch uname vi hello systemfetch top
 USER_C_UTILITIES := hello_c
 
 # Cabeçalhos e fontes da libc de userspace (common/userland/libraries/libc).

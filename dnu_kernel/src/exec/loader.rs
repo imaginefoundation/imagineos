@@ -13,8 +13,8 @@ use crate::fpu;
 use crate::gdt;
 use crate::paging::{AddressSpace, MapError};
 use crate::exec::process::{
-    FpuState, Process, KERNEL_STACK_SIZE, KERNEL_STACKS, MAX_EXEC_ARGS, MAX_EXEC_ENV, PAGE_SIZE,
-    USER_HEAP_START, USER_STACK_SIZE, USER_STACK_TOP,
+    FpuState, Priority, Process, KERNEL_STACK_SIZE, KERNEL_STACKS, MAX_EXEC_ARGS, MAX_EXEC_ENV,
+    PAGE_SIZE, USER_HEAP_START, USER_STACK_SIZE, USER_STACK_TOP,
 };
 
 use super::space::copy_to_space_result;
@@ -153,6 +153,11 @@ pub fn load(
         exit_status: 0,
         waiting_for: 0,
         quantum: 0,
+        // Imagens carregadas pelo kernel (PID 1) nascem como supervisor; o
+        // `process::init` ajusta o nível conforme o programa. Filhos criados em
+        // userspace herdam a prioridade do pai em `fork`/`spawn`.
+        priority: Priority::Supervisor,
+        slice_used: 0,
         allows_disk_install,
         uid: 0,
         gid: 0,

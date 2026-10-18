@@ -3,6 +3,10 @@ use core::cell::UnsafeCell;
 use core::ptr;
 use limine::framebuffer::Framebuffer;
 
+/// Quantos parâmetros de uma sequência CSI (`\x1b[<p>;<p>...<letra>`) o parser
+/// guarda. As sequências que o userspace usa têm no máximo dois.
+const CSI_MAX_PARAMETERS: usize = 4;
+
 /* Console structure */
 struct Console {
     address: *mut u8,
@@ -24,9 +28,21 @@ struct Console {
     glyph_offset: usize,
     unicode_offset: usize,
     has_unicode_table: bool,
+    /// Formato da tabela Unicode: binário u16 (PSF1) ou strings UTF-8
+    /// separadas por `0xfe`/`0xff` (PSF2 com tabela legada). Detectado no
+    /// carregamento, onde o formato da fonte é conhecido com certeza — o
+    /// `glyph_index` não pode decidir isso pelo magic do arquivo, porque o
+    /// magic `36 04` é o mesmo em todo arquivo PSF1.
+    unicode_table_binary: bool,
     ansi_state: u8,
     ansi_value: u16,
     ansi_has_value: bool,
+    /// Parâmetros CSI acumulados da sequência em curso (ex.: `\x1b[1;36m` deixa
+    /// `[1, 36]`). Só os quatro primeiros são guardados — é o suficiente para as
+    /// sequências usadas pelo userspace e evita qualquer alocação no parser.
+    ansi_parameters: [u16; CSI_MAX_PARAMETERS],
+    /// Quantos parâmetros já foram acumulados em `ansi_parameters`.
+    ansi_parameter_count: usize,
     foreground: u32,
     /// Quando falso, o console do kernel não desenha: a tela pertence ao
     /// servidor de display de userspace.
@@ -55,9 +71,12 @@ impl Console {
             glyph_offset: 0,
             unicode_offset: 0,
             has_unicode_table: false,
+            unicode_table_binary: true,
             ansi_state: 0,
             ansi_value: 0,
             ansi_has_value: false,
+            ansi_parameters: [0; CSI_MAX_PARAMETERS],
+            ansi_parameter_count: 0,
             foreground: 0xdce8e8,
             active: true,
         }
@@ -113,6 +132,10 @@ pub fn load_font(bytes: &[u8]) -> bool {
             console.glyph_offset = 4;
             console.unicode_offset = 4 + glyph_count * glyph_bytes;
             console.has_unicode_table = bytes[2] & 2 != 0;
+            // A tabela Unicode de uma fonte PSF1 é sempre binária (u16
+            // little-endian, sequências separadas por `0xffff`), mesmo quando
+            // a fonte declara a flag de tabela Unicode.
+            console.unicode_table_binary = true;
             return true;
         }
     }
@@ -144,6 +167,7 @@ pub fn load_font(bytes: &[u8]) -> bool {
             console.glyph_offset = header_size;
             console.unicode_offset = header_size + glyph_data_size.unwrap_or(0);
             console.has_unicode_table = read_u32(bytes, 12).unwrap_or(0) & 1 != 0;
+            console.unicode_table_binary = true;
             return true;
         }
     }
@@ -198,6 +222,7 @@ pub fn write_ansi(bytes: &[u8]) {
                     console.ansi_state = if byte == b'[' { 2 } else { 0 };
                     console.ansi_value = 0;
                     console.ansi_has_value = false;
+                    console.ansi_parameter_count = 0;
                     false
                 }
                 2 if byte.is_ascii_digit() => {
@@ -209,42 +234,183 @@ pub fn write_ansi(bytes: &[u8]) {
                     false
                 }
                 2 if byte == b';' => {
-                    if console.ansi_value == 0 {
-                        console.foreground = 0xdce8e8;
-                    } else {
-                        set_ansi_foreground(console, console.ansi_value);
-                    }
-                    console.ansi_value = 0;
-                    console.ansi_has_value = false;
+                    push_ansi_parameter(console);
                     false
                 }
                 2 if byte == b'm' => {
-                    if console.ansi_value == 0 || !console.ansi_has_value {
-                        console.foreground = 0xdce8e8;
-                    } else {
-                        set_ansi_foreground(console, console.ansi_value);
+                    // `\x1b[<a>;<b>m`: cada parâmetro pode ser uma cor, um
+                    // atributo (`1` negrito) ou `0` (reset). Como `1;36m` tem
+                    // negrito antes da cor, processamos **todos** os parâmetros
+                    // em ordem em vez de olhar só o primeiro.
+                    push_ansi_parameter(console);
+                    for index in 0..console.ansi_parameter_count {
+                        let parameter = console.ansi_parameters[index];
+                        if parameter == 0 {
+                            console.foreground = 0xdce8e8;
+                        } else {
+                            set_ansi_foreground(console, parameter);
+                        }
                     }
                     console.ansi_state = 0;
+                    console.ansi_parameter_count = 0;
                     false
                 }
+                // Movimento de cursor, apagar linha e limpar a tela.
+                //
+                // Sem estes comandos um cliente como o `top` não consegue
+                // redesenhar no lugar: o kernel descartava a sequência em
+                // silêncio, e o resultado era uma tela que nunca atualizava.
                 2 => {
+                    apply_ansi_command(console, byte, console.ansi_value);
                     console.ansi_state = 0;
+                    console.ansi_parameter_count = 0;
                     false
                 }
                 _ => {
                     console.ansi_state = 0;
+                    console.ansi_parameter_count = 0;
                     false
                 }
             }
         };
         if flush_plain && plain_length != 0 {
-            write_utf8(&plain[..plain_length]);
-            plain_length = 0;
+            flush_plain_bytes(&mut plain, &mut plain_length);
         }
     }
     if plain_length != 0 {
-        write_utf8(&plain[..plain_length]);
+        // Uma sequência UTF-8 incompleta no fim do buffer pode ser o começo de
+        // um caractere que continua na próxima chamada; preservá-la evita o
+        // `\u{fffd}` (`?`) quando um `write` do userspace fatia um caractere.
+        flush_plain_bytes(&mut plain, &mut plain_length);
     }
+}
+
+/// Emite o que estiver em `plain`, guardando um eventual prefixo de caractere
+/// multi-byte incompleto no fim do buffer para a próxima chamada.
+fn flush_plain_bytes(plain: &mut [u8; 4096], plain_length: &mut usize) {
+    let length = *plain_length;
+    let (valid, incomplete) = match core::str::from_utf8(&plain[..length]) {
+        Ok(_) => (length, false),
+        Err(error) => (error.valid_up_to(), error.error_len().is_none()),
+    };
+    if valid != 0 {
+        write_utf8(&plain[..valid]);
+    }
+    if incomplete {
+        // Sequência UTF-8 truncada no fim do buffer: pode continuar na próxima
+        // chamada. Move o prefixo para o começo e espera o resto.
+        let keep = length - valid;
+        plain.copy_within(valid..length, 0);
+        *plain_length = keep;
+    } else {
+        if valid != length {
+            write_utf8(&plain[valid..length]);
+        }
+        *plain_length = 0;
+    }
+}
+
+/// Fecha o parâmetro CSI em curso e o guarda em `ansi_parameters`.
+///
+/// Chamado ao encontrar `;` ou a letra final. Um parâmetro ausente (ex.:
+/// `\x1b[;H`) vale `0`, conforme a convenção do terminal.
+fn push_ansi_parameter(console: &mut Console) {
+    if console.ansi_parameter_count < CSI_MAX_PARAMETERS {
+        let value = if console.ansi_has_value {
+            console.ansi_value
+        } else {
+            0
+        };
+        console.ansi_parameters[console.ansi_parameter_count] = value;
+        console.ansi_parameter_count += 1;
+    }
+    console.ansi_value = 0;
+    console.ansi_has_value = false;
+}
+
+/// Executa um comando CSI (`\x1b[<valor><letra>`).
+///
+/// Suporta o mínimo que um programa de tela cheia precisa:
+///
+/// * `A`/`B`/`C`/`D` — move o cursor uma ou `valor` colunas/linhas;
+/// * `H`/`f` — posiciona em `linha;coluna` (1-based; `0` ou ausente = 1);
+/// * `J` — `2` limpa a tela e vai para o canto;
+/// * `K` — `0`/ausente apaga até o fim da linha, `1` até o início, `2` a linha.
+fn apply_ansi_command(console: &mut Console, command: u8, value: u16) {
+    let step = if value == 0 { 1 } else { value as usize };
+    match command {
+        b'A' => {
+            console.cursor_y = console
+                .cursor_y
+                .saturating_sub(step * console.font_height);
+        }
+        b'B' => {
+            console.cursor_y += step * console.font_height;
+            if console.cursor_y + console.font_height > console.height {
+                console.cursor_y = console.height.saturating_sub(console.font_height);
+            }
+        }
+        b'C' => {
+            console.cursor_x += step * console.font_width;
+            if console.cursor_x + console.font_width > console.width {
+                console.cursor_x = console.width.saturating_sub(console.font_width);
+            }
+        }
+        b'D' => {
+            console.cursor_x = console
+                .cursor_x
+                .saturating_sub(step * console.font_width);
+        }
+        b'H' | b'f' => {
+            // `H` sem valor é `1;1`; com um valor é a linha, coluna 1.
+            let row = if value == 0 { 0 } else { value as usize - 1 };
+            console.cursor_x = 0;
+            console.cursor_y = row * console.font_height;
+            if console.cursor_y + console.font_height > console.height {
+                console.cursor_y = console.height.saturating_sub(console.font_height);
+            }
+        }
+        b'J' => {
+            if value == 2 || value == 0 {
+                clear_screen(console);
+            }
+        }
+        b'K' => erase_line(console, value),
+        _ => {}
+    }
+}
+
+/// Apaga a linha do cursor conforme o parâmetro de `K`.
+fn erase_line(console: &mut Console, mode: u16) {
+    let (start, end) = match mode {
+        1 => (0, console.cursor_x + console.font_width),
+        2 => (0, console.width),
+        _ => (console.cursor_x, console.width),
+    };
+    let mut x = start.min(console.width);
+    let end = end.min(console.width);
+    while x < end {
+        erase_cell(console, x, console.cursor_y);
+        x += console.font_width;
+    }
+}
+
+/// Limpa a tela inteira e posiciona o cursor no canto superior esquerdo.
+///
+/// Diferente de [`clear`], que também esconde o cursor (usado pelo `SYS_CLEAR`
+/// do console do kernel), aqui o cursor volta visível: um programa de tela cheia
+/// espera poder continuar desenhando logo em seguida.
+fn clear_screen(console: &mut Console) {
+    if console.address.is_null() {
+        return;
+    }
+    for y in 0..console.height {
+        for x in 0..console.width {
+            pixel(console, x, y, 0x101820);
+        }
+    }
+    console.cursor_x = 0;
+    console.cursor_y = 0;
 }
 
 fn set_ansi_foreground(console: &mut Console, color: u16) {
@@ -469,7 +635,7 @@ fn glyph_index(console: &Console, font: &[u8], character: char) -> Option<usize>
     if !console.has_unicode_table || console.unicode_offset >= font.len() {
         return None;
     }
-    if font.starts_with(&[0x36, 0x04]) {
+    if console.unicode_table_binary {
         let mut offset = console.unicode_offset;
         for glyph in 0..console.glyph_count {
             while offset + 2 <= font.len() {
@@ -478,7 +644,11 @@ fn glyph_index(console: &Console, font: &[u8], character: char) -> Option<usize>
                 if codepoint == 0xffff {
                     break;
                 }
-                if codepoint == 0xfffe {
+                if codepoint == 0xfffe || codepoint == 0xfffd {
+                    // `0xfffd`/`0xfffe` introduzem uma sequência de codepoints
+                    // que também mapeiam para este mesmo glifo; avança até o
+                    // terminador `0xffff`. Esta fonte (`zap-vga16`) usa
+                    // `0xfffd`, mas a convenção `0xfffe` também existe.
                     while offset + 2 <= font.len() {
                         let sequence = u16::from_le_bytes([font[offset], font[offset + 1]]);
                         offset += 2;

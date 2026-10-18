@@ -16,6 +16,7 @@ use imagineos::process;
 
 use crate::env::{self, Environment, EnvironmentPairs};
 use crate::expand::{expand, ExpandedWord, FIELD_SIZE};
+use crate::history::History;
 use crate::lexer::Word;
 use crate::parser::{Command, Connector, Entry, MAX_PIPELINE, MAX_WORDS};
 use crate::uri;
@@ -33,18 +34,26 @@ pub struct Executor<'a> {
     /// Ligado por `exit`/`logout`: o laço principal encerra após a linha.
     pub should_exit: bool,
     pub exit_status: Status,
+    /// Histórico da sessão, consultado pelo builtin `history`.
+    pub history: &'a History,
     /// Buffers de `NAME=VALUE` reaproveitados a cada `spawn`.
     pairs: EnvironmentPairs,
 }
 
 impl<'a> Executor<'a> {
-    pub fn new(environment: &'a mut Environment, cwd: &'a mut [u8; uri::MAX_PATH], cwd_length: &'a mut usize) -> Self {
+    pub fn new(
+        environment: &'a mut Environment,
+        cwd: &'a mut [u8; uri::MAX_PATH],
+        cwd_length: &'a mut usize,
+        history: &'a History,
+    ) -> Self {
         Self {
             environment,
             cwd,
             cwd_length,
             should_exit: false,
             exit_status: 0,
+            history,
             pairs: EnvironmentPairs::new(),
         }
     }
@@ -225,8 +234,26 @@ impl<'a> Executor<'a> {
             b":" | b"true" => Some(0),
             b"false" => Some(1),
             b"help" => Some(self.builtin_help()),
+            b"history" => Some(self.builtin_history()),
             _ => None,
         }
+    }
+
+    /// `history`: lista os comandos da sessão em ordem numérica.
+    fn builtin_history(&mut self) -> Status {
+        let mut wrote_any = false;
+        self.history.for_each(|number, entry| {
+            let mut digits = [0u8; 20];
+            write(imagineos::fmt::decimal(&mut digits, number as u64));
+            write(b"  ");
+            write(entry);
+            write(b"\n");
+            wrote_any = true;
+        });
+        if !wrote_any {
+            write(b"history: vazio\n");
+        }
+        STATUS_SUCCESS
     }
 
     fn builtin_cd(&mut self, arguments: &[Word]) -> Status {
@@ -370,7 +397,7 @@ impl<'a> Executor<'a> {
 
     fn builtin_help(&mut self) -> Status {
         write(
-            b"builtins: cd pwd echo export unset set exit true false help\n\
+            b"builtins: cd pwd echo export unset set exit true false help history\n\
               operadores: | && || ; > >> < &   variaveis: $VAR ${VAR} $? $$ ' ' \" \"\n",
         );
         STATUS_SUCCESS
@@ -823,7 +850,7 @@ fn is_builtin_name(name: &[u8]) -> bool {
     matches!(
         name,
         b"cd" | b"pwd" | b"echo" | b"export" | b"unset" | b"set" | b"exit" | b"logout"
-            | b":" | b"true" | b"false" | b"help"
+            | b":" | b"true" | b"false" | b"help" | b"history"
     )
 }
 

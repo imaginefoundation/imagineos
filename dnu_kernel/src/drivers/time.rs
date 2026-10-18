@@ -9,13 +9,9 @@ const POLL_LIMIT: usize = 100_000_000;
 const PIT_INPUT_FREQUENCY: u64 = 1_193_182;
 /// Target frequency of the scheduler tick installed by the kernel.
 pub const TIMER_TICK_HZ: u64 = 100;
-/// Quantos ticks cada processo recebe antes de o timer pedir a troca.
-///
-/// Sem isto o processo era preemptado a cada 10 ms, e o custo do switch
-/// (trocar CR3, salvar/restaurar o estado FPU) consumia o pouco tempo útil —
-/// um processo recém-criado por `fork` era interrompido antes de executar a
-/// primeira instrução de usuário e parecia travar. 5 ticks dão 50 ms de
-/// quantum, que é generoso para o modelo cooperativo que este kernel usa.
+/// Teto de quantum, em ticks. O quantum efetivo vem de
+/// `process::Priority::quantum_ticks`; este valor só documenta a faixa usada.
+#[allow(dead_code)]
 pub const TIMER_QUANTUM_TICKS: u64 = 10;
 
 static START_TSC: AtomicU64 = AtomicU64::new(0);
@@ -25,6 +21,16 @@ static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 pub fn init_with(start: u64, frequency: u64) {
     START_TSC.store(start, Ordering::Relaxed);
     TSC_FREQUENCY.store(frequency, Ordering::Relaxed);
+}
+
+/// Vetor do IRQ0 (timer do PIT).
+///
+/// Os vetores 0..=31 são exceções da CPU e 0x80 é a syscall, então o timer vai
+/// para 0x20, logo acima das exceções. Registrar o timer em outro vetor (como
+/// 0x0e, `#PF`) faria o IRQ0 ser despachado como exceção e nunca chegar ao
+/// handler — o contador de ticks ficaria em zero para sempre.
+pub const fn timer_vector() -> u8 {
+    0x20
 }
 
 /// Programs the 8253/8254 PIT channel 0 to raise IRQ0 at [`TIMER_TICK_HZ`] and
@@ -103,37 +109,49 @@ pub fn timer_ticks() -> u64 {
 }
 
 pub fn elapsed_microseconds() -> Option<u64> {
-    let frequency = TSC_FREQUENCY.load(Ordering::Relaxed);
-    if frequency == 0 {
-        return None;
-    }
-    let cycles = read_tsc().saturating_sub(START_TSC.load(Ordering::Relaxed));
-    Some(
-        cycles / frequency * 1_000_000
-            + cycles % frequency * 1_000_000 / frequency,
-    )
+    // A conversão em si vive em `tests/time_math.rs`, incluída como módulo: é a
+    // mesma função exercitada pelos testes de host, então a versão testada e a
+    // versão que roda não podem divergir. O caminho é relativo a este arquivo.
+    #[path = "time_math.rs"]
+    mod math;
+    math::elapsed_microseconds(elapsed_cycles(), TSC_FREQUENCY.load(Ordering::Relaxed))
 }
 
+/// Formata o tempo desde o boot como `[segundos.microsegundos] `.
+///
+/// A precisão vem do TSC: a conversão usa ciclos/frequência em ponto fixo, sem
+/// perder resolução para milissegundos. Se a frequência não foi calibrada, o
+/// carimbo degrada para `[time?]` em vez de imprimir um número errado.
 pub fn format_elapsed(output: &mut [u8; 32]) -> &[u8] {
-    let frequency = TSC_FREQUENCY.load(Ordering::Relaxed);
-    if frequency == 0 {
+    let Some(microseconds) = elapsed_microseconds() else {
         return b"[time?] ";
-    }
-
-    let cycles = read_tsc().saturating_sub(START_TSC.load(Ordering::Relaxed));
-    let milliseconds = cycles / frequency * 1000 + (cycles % frequency) * 1000 / frequency;
-    format_milliseconds(milliseconds, output)
+    };
+    format_microseconds(microseconds, output)
 }
 
-fn format_milliseconds(milliseconds: u64, output: &mut [u8; 32]) -> &[u8] {
-    let seconds = milliseconds / 1000;
+pub fn elapsed_microseconds_cycles() -> Option<u64> {
+    elapsed_microseconds()
+}
+
+/// Ciclos de TSC desde o boot (0 quando o TSC ainda não foi amostrado).
+pub fn elapsed_cycles() -> u64 {
+    read_tsc().saturating_sub(START_TSC.load(Ordering::Relaxed))
+}
+
+/// Frequência do TSC em Hz (0 quando não calibrada).
+pub fn tsc_frequency() -> u64 {
+    TSC_FREQUENCY.load(Ordering::Relaxed)
+}
+
+fn format_microseconds(microseconds: u64, output: &mut [u8; 32]) -> &[u8] {
+    let seconds = microseconds / 1_000_000;
     let mut cursor = 0;
     output[cursor] = b'[';
     cursor += 1;
-    cursor += write_decimal(&mut output[cursor..], seconds, 6);
+    cursor += write_decimal(&mut output[cursor..], seconds, 3);
     output[cursor] = b'.';
     cursor += 1;
-    cursor += write_decimal(&mut output[cursor..], milliseconds % 1000, 3);
+    cursor += write_decimal(&mut output[cursor..], microseconds % 1_000_000, 6);
     output[cursor] = b']';
     output[cursor + 1] = b' ';
     &output[..cursor + 2]

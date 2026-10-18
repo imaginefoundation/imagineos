@@ -17,11 +17,16 @@
 #![no_std]
 #![no_main]
 
+mod complete;
 mod env;
 mod exec;
 mod expand;
+mod highlight;
+mod history;
 mod lexer;
+mod line;
 mod parser;
+mod prompt;
 mod uri;
 
 use core::panic::PanicInfo;
@@ -29,10 +34,8 @@ use core::panic::PanicInfo;
 use env::Environment;
 use exec::{Executor, STATUS_FAILURE};
 use lexer::{tokenize, LexError, Token, Word, MAX_TOKENS};
+use line::{Editor, LineResult, MAX_LINE};
 use parser::{parse_list, Connector, Entry, ParseError, MAX_ENTRIES};
-
-/// Comprimento máximo de uma linha de comando digitada.
-const LINE_SIZE: usize = 256;
 
 #[unsafe(no_mangle)]
 extern "C" fn _start(
@@ -63,74 +66,60 @@ extern "C" fn _start(
                 &mut environment,
                 &mut cwd,
                 &mut cwd_length,
+                &history::History::new(),
             );
             imagineos::process::exit(if status == EXIT_REQUESTED { 0 } else { status });
         }
         [script] => {
-            let status = run_script(script, &mut environment, &mut cwd, &mut cwd_length);
+            let status = run_script(
+                script,
+                &mut environment,
+                &mut cwd,
+                &mut cwd_length,
+                &history::History::new(),
+            );
             imagineos::process::exit(status);
         }
         _ => {}
     }
 
-    let mut line = [0u8; LINE_SIZE];
+    interactive(&mut environment, &mut cwd, &mut cwd_length)
+}
+
+/// Laço interativo: lê uma linha com edição/histórico e a executa.
+fn interactive(
+    environment: &mut Environment,
+    cwd: &mut [u8; uri::MAX_PATH],
+    cwd_length: &mut usize,
+) -> ! {
+    let mut editor = Editor::new();
+    let mut line = [0u8; MAX_LINE];
     let mut length = 0usize;
 
-    prompt(&environment, &cwd[..cwd_length]);
+    prompt::write_prompt(&cwd[..*cwd_length]);
     loop {
-        let character = match imagineos::console::read_char() {
-            Ok(character) => character,
-            Err(_) => imagineos::process::exit(1),
-        };
-        match character {
-            '\r' | '\n' => {
-                write(b"\n");
-                let status = run_line(
-                    &line[..length],
-                    &mut environment,
-                    &mut cwd,
-                    &mut cwd_length,
-                );
-                line[..length].fill(0);
-                length = 0;
-                if status == EXIT_REQUESTED {
-                    imagineos::process::exit(0);
-                }
-                if status != 0 {
-                    // `status` carrega o código de saída pedido por `exit N`.
-                    let code = environment
-                        .get(b"?")
-                        .and_then(|value| core::str::from_utf8(value).ok())
-                        .and_then(|text| text.parse::<i32>().ok())
-                        .unwrap_or(status);
-                    let _ = code;
-                }
-                prompt(&environment, &cwd[..cwd_length]);
+        match editor.read_line(&mut line, &cwd[..*cwd_length], &mut length) {
+            LineResult::Line => {}
+            // `Ctrl-C` cancela a linha e mostra um prompt novo, sem executar.
+            LineResult::Interrupted => {
+                prompt::write_prompt(&cwd[..*cwd_length]);
+                continue;
             }
-            '\u{8}' | '\u{7f}' => {
-                if length > 0 {
-                    length -= 1;
-                    // Apaga um caractere UTF-8 inteiro.
-                    while length > 0 && line[length] & 0xc0 == 0x80 {
-                        length -= 1;
-                    }
-                    write(b"\x08 \x08");
-                }
-            }
-            value if !value.is_control() && !is_keyboard_event(value) => {
-                let mut encoded = [0u8; 4];
-                let bytes = value.encode_utf8(&mut encoded).as_bytes();
-                if length + bytes.len() <= line.len() {
-                    line[length..length + bytes.len()].copy_from_slice(bytes);
-                    length += bytes.len();
-                    write(bytes);
-                }
-            }
-            _ => {}
+            LineResult::Exit => imagineos::process::exit(1),
         }
-        if imagineos::process::yield_now().is_err() {
-            imagineos::process::exit(1);
+        let status = run_line(
+            &line[..length],
+            environment,
+            cwd,
+            cwd_length,
+            editor.history(),
+        );
+        line[..length].fill(0);
+        length = 0;
+        if status == EXIT_REQUESTED {
+            imagineos::process::exit(0);
         }
+        prompt::write_prompt(&cwd[..*cwd_length]);
     }
 }
 
@@ -176,6 +165,7 @@ fn run_script(
     environment: &mut Environment,
     cwd: &mut [u8; uri::MAX_PATH],
     cwd_length: &mut usize,
+    history: &history::History,
 ) -> i32 {
     let mut buffer = [0u8; 4096];
     let length = match imagineos::fs::read_file(path, &mut buffer) {
@@ -190,7 +180,7 @@ fn run_script(
         if line.iter().all(|byte| byte.is_ascii_whitespace()) {
             continue;
         }
-        status = run_line(line, environment, cwd, cwd_length);
+        status = run_line(line, environment, cwd, cwd_length, history);
         if status == EXIT_REQUESTED {
             // Um `exit` num script devolve o status acumulado, não encerra o
             // shell chamador.
@@ -206,6 +196,7 @@ fn run_line(
     environment: &mut Environment,
     cwd: &mut [u8; uri::MAX_PATH],
     cwd_length: &mut usize,
+    history: &history::History,
 ) -> i32 {
     if line.iter().all(|byte| byte.is_ascii_whitespace()) {
         return 0;
@@ -233,7 +224,7 @@ fn run_line(
         }
     };
 
-    let mut executor = Executor::new(environment, cwd, cwd_length);
+    let mut executor = Executor::new(environment, cwd, cwd_length, history);
     let status = executor.run_list(&entries[..entry_count]);
     if executor.should_exit {
         return EXIT_REQUESTED;
@@ -260,39 +251,6 @@ fn initialise_from_identity(environment: &mut Environment) {
     }
 }
 
-fn prompt(environment: &Environment, cwd: &[u8]) {
-    // Copia os textos para buffers locais: `identity` é temporário e os campos
-    // não sobrevivem ao `match`.
-    let mut username_buffer = [0u8; 64];
-    let mut hostname_buffer = [0u8; 64];
-    let mut username_length = 4usize;
-    let mut hostname_length = 9usize;
-    username_buffer[..4].copy_from_slice(b"root");
-    hostname_buffer[..9].copy_from_slice(b"imagineos");
-    let mut is_root = true;
-    if let Ok(identity) = imagineos::users::identity() {
-        username_length = identity.username_length as usize;
-        hostname_length = identity.hostname_length as usize;
-        username_buffer[..username_length].copy_from_slice(&identity.username[..username_length]);
-        hostname_buffer[..hostname_length].copy_from_slice(&identity.hostname[..hostname_length]);
-        is_root = identity.uid == 0;
-    }
-    let username = core::str::from_utf8(&username_buffer[..username_length]).unwrap_or("root");
-    let hostname = core::str::from_utf8(&hostname_buffer[..hostname_length]).unwrap_or("imagineos");
-    let _ = environment;
-    write(b"\x1b[32m");
-    write(username.as_bytes());
-    write(b"\x1b[0m@\x1b[36m");
-    write(hostname.as_bytes());
-    write(b"\x1b[0m:\x1b[34m");
-    write(cwd);
-    if is_root {
-        write(b"\x1b[0m# ");
-    } else {
-        write(b"\x1b[0m$ ");
-    }
-}
-
 fn report_lex_error(error: LexError) {
     let message: &[u8] = match error {
         LexError::UnterminatedQuote => b"shell: aspas nao fechadas\n",
@@ -312,14 +270,16 @@ fn report_parse_error(error: ParseError) {
     write(message);
 }
 
-fn is_keyboard_event(character: char) -> bool {
-    ('\u{f0000}'..='\u{f0007}').contains(&character)
-}
-
-fn write(bytes: &[u8]) {
+/// Escreve `bytes` no console; `pub(crate)` para os módulos do shell usarem.
+pub(crate) fn write(bytes: &[u8]) {
     if imagineos::console::write_all(bytes).is_err() {
         imagineos::process::exit(1);
     }
+}
+
+/// Escreve `bytes` no console, sem encerrar o shell em caso de erro.
+pub(crate) fn write_error(bytes: &[u8]) {
+    let _ = imagineos::console::write_all(bytes);
 }
 
 #[panic_handler]

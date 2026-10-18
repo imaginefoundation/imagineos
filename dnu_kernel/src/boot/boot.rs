@@ -84,9 +84,17 @@ pub fn limine_start() -> ! {
     let reserved: &[PhysicalRange] = &EMPTY_RESERVED;
 
     let tsc_start = crate::time::read_tsc();
-    // Sem o bootstrap não há calibração via PIT; tenta o cpuid e, na falta
-    // dele, deixa a frequência zerada (o kernel lida com isso).
-    let tsc_frequency = crate::time::cpuid_tsc_frequency().unwrap_or(0);
+    // Frequência do TSC, em três tentativas, da mais barata para a mais lenta:
+    //   1. `cpuid` (folhas 0x15/0x16) — exato quando o firmware informa;
+    //   2. calibração contra o PIT (canal 2) — sempre funciona em x86 com PIT;
+    //   3. zero — o kernel cai para `[time?]` nos logs em vez de mentir.
+    //
+    // Sem isto o relógio relativo ficava indisponível em máquinas cujo `cpuid`
+    // não expõe a frequência (a maioria dos QEMU/OVMF), e todo log saía com
+    // `[time?]` em vez do tempo desde o boot.
+    let tsc_frequency = crate::time::cpuid_tsc_frequency()
+        .or_else(crate::time::calibrate_tsc)
+        .unwrap_or(0);
 
     let boot_info = BootInfo {
         memory_map: memory_map as *const MemoryMapResponse,

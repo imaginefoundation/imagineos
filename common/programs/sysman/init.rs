@@ -1,4 +1,10 @@
-//! init — PID 1, em duas fases, como um initramfs Linux.
+//! sysman/init — PID 1 (System Maintainer), em duas fases, como um initramfs
+//! Linux.
+//!
+//! O binário instalado em `/sbin/init` é o **System Maintainer Utility**: o
+//! processo 1 do ImagineOS. Ele não pode ser encerrado nem morto por sinal — o
+//! kernel recusa (`crate::init::protection`) —, é o primeiro processo carregado
+//! no boot e é quem coleta zumbis e desliga a máquina.
 //!
 //! **Fase 1 (initramfs):** monta o disco, prepara a raiz real (DFS) e, se ela
 //! existir, troca a raiz com `pivot_root` e re-executa `/sbin/init` — agora o
@@ -16,6 +22,9 @@
 
 use core::panic::PanicInfo;
 
+/// Identidade anunciada no boot.
+const BANNER: &[u8] = b"System Maintainer Utility - v0.1\n";
+
 #[unsafe(no_mangle)]
 extern "C" fn _start(
     _argc: usize,
@@ -23,6 +32,7 @@ extern "C" fn _start(
     _envc: usize,
     _envp: *const *const u8,
 ) -> ! {
+    let _ = imagineos::console::write_all(BANNER);
     // ------------------------------------------------------------------
     // Fase 1: pivota para a raiz real, se ela estiver preparada.
     // ------------------------------------------------------------------
@@ -71,7 +81,11 @@ fn phase_two_started() -> bool {
 
 fn run_supervisor() -> ! {
     if imagineos::console::write_all(b"init: PID 1 supervising the system\n").is_err() {
-        imagineos::process::exit(1);
+        // O kernel recusa `exit` no PID 1 (EPERM), então um erro de escrita no
+        // console não pode encerrar o supervisor: ele segue girando.
+        loop {
+            let _ = imagineos::process::yield_now();
+        }
     }
     // Supervisor de serviços: quando /etc/init contém "horust", o PID 1
     // delega a supervisão ao horust-lite (formato de serviços Horust em
@@ -155,7 +169,10 @@ fn run_supervisor() -> ! {
             }
         }
         if imagineos::process::yield_now().is_err() {
-            imagineos::process::exit(1);
+            // Nunca encerra: sem PID 1 ninguém mais coleta zumbis nem desliga.
+            loop {
+                let _ = imagineos::process::yield_now();
+            }
         }
     }
 }

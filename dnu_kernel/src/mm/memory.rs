@@ -1,5 +1,6 @@
 use crate::boot_info::PhysicalRange;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU64, Ordering};
 use limine::memory_map::{Entry, EntryType};
 
 const PAGE_SIZE: u64 = 4096;
@@ -38,6 +39,13 @@ unsafe impl Sync for SharedAllocator {}
 
 static ALLOCATOR: SharedAllocator = SharedAllocator(UnsafeCell::new(FrameAllocator::new()));
 
+/// Bytes já entregues por `allocate_frame`.
+///
+/// As regiões guardam apenas o ponteiro `next`, então o total utilizável não
+/// pode ser reconstruído depois do fato: este contador preserva o montante
+/// inicial para que `usage()` possa reportar `total` sem guardar `start`.
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+
 pub struct Frame {
     pub physical_address: u64,
     pub virtual_address: *mut u8,
@@ -74,7 +82,6 @@ pub fn init(entries: &[&Entry], hhdm_offset: u64, reserved: &[PhysicalRange]) ->
         .map(|region| ((region.end - region.next) / PAGE_SIZE) as usize)
         .sum()
 }
-
 fn add_unreserved_regions(
     allocator: &mut FrameAllocator,
     mut base: u64,
@@ -117,6 +124,7 @@ pub fn allocate_frame() -> Option<Frame> {
             // Checked: a region ending near u64::MAX must not wrap around
             // and hand out already-used frames.
             region.next = region.next.checked_add(PAGE_SIZE)?;
+            ALLOCATED_BYTES.fetch_add(PAGE_SIZE, Ordering::Relaxed);
             let virtual_address = physical_address.checked_add(allocator.hhdm_offset)? as *mut u8;
             return Some(Frame {
                 physical_address,
@@ -133,4 +141,21 @@ pub fn phys_to_virt(physical_address: u64) -> Option<*mut u8> {
     physical_address
         .checked_add(allocator.hhdm_offset)
         .map(|virtual_address| virtual_address as *mut u8)
+}
+
+/// Estado do alocador de frames, em bytes.
+///
+/// `total` é a soma das regiões utilizáveis que o Limine reportou (já sem os
+/// intervalos reservados), `free` o que ainda não foi entregue e `used` a
+/// diferença. É o que `systemfetch` e `top` mostram como "RAM".
+pub fn usage() -> (u64, u64) {
+    let allocator = unsafe { &*ALLOCATOR.0.get() };
+    let mut free = 0u64;
+    for region in allocator.regions.iter().take(allocator.region_count) {
+        free += region.end.saturating_sub(region.next);
+    }
+    // `total` = frames já entregues + o que ainda resta. As regiões guardam
+    // apenas o ponteiro `next`, então o montante entregue vem do contador.
+    let total = ALLOCATED_BYTES.load(Ordering::Relaxed) + free;
+    (total, free)
 }

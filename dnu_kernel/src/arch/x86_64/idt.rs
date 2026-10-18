@@ -362,7 +362,12 @@ pub fn init() {
         *entry = IdtEntry::interrupt_gate(handler, selector);
     }
     let timer_handler = dreamcore_timer_interrupt as *const () as usize as u64;
-    idt[0x20] = IdtEntry::interrupt_gate(timer_handler, selector);
+    // O vetor vem de `time::timer_vector()` (0x20): os vetores 0..=31 são
+    // exceções da CPU e 0x80 é a syscall. Registrar o timer em 0x0e (que é o
+    // `#PF`) fazia o IRQ0 ser despachado como exceção e o handler do timer nunca
+    // rodava — o relógio de ticks ficava em zero e a preempção nunca acontecia.
+    idt[crate::time::timer_vector() as usize] =
+        IdtEntry::interrupt_gate(timer_handler, selector);
     let syscall_handler = dreamcore_syscall_stub as *const () as usize as u64;
     idt[0x80] = IdtEntry {
         attributes: 0xee,

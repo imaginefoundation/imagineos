@@ -13,8 +13,8 @@ use imagineos_abi::{
     SYS_PROCESS_LIST, SYS_READ, SYS_READ_FD, SYS_READ_FILE, SYS_READDIR, SYS_REMOVE, SYS_SBRK,
     SYS_SHUTDOWN_POLL, SYS_SHUTDOWN_REQUEST, SYS_SIGACTION, SYS_SIGRETURN, SYS_SPAWN, SYS_STAT,
     SYS_SURFACE_CREATE, SYS_SURFACE_DESTROY, SYS_SURFACE_FLUSH, SYS_SURFACE_MOVE, SYS_SURFACE_POLL,
-    SYS_SURFACE_PRESENT, SYS_SURFACE_SEND_EVENT, SYS_SURFACE_SNAPSHOT, SYS_TOUCH, SYS_WAITPID,
-    SYS_WRITE, SYS_WRITE_FD, SYS_WRITE_FILE, SYS_YIELD,
+    SYS_SURFACE_PRESENT, SYS_SURFACE_SEND_EVENT, SYS_SURFACE_SNAPSHOT, SYS_SYSTEM_INFO, SYS_TOUCH,
+    SYS_WAITPID, SYS_WRITE, SYS_WRITE_FD, SYS_WRITE_FILE, SYS_YIELD,
 };
 
 // `crate::process` é o escalonador (reexportado por `exec`); o módulo
@@ -121,6 +121,7 @@ fn dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
         // --- sistema: identidade, tempo, disco, energia, instalação -------
         SYS_ABI_VERSION => frame.ok(imagineos_abi::ABI_VERSION),
         SYS_GETIDENTITY => system::identity(frame),
+        SYS_SYSTEM_INFO => system::system_info(frame),
         SYS_GETTIMEOFDAY => system::gettimeofday(frame),
         SYS_DMESG => system::dmesg(frame),
         SYS_DISK_COUNT => frame.ok(u64::from(crate::ata::is_ready())),

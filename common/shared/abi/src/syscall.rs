@@ -102,3 +102,7 @@ pub const SYS_PIVOT_ROOT: u64 = 60;
 /// `surface_move(id, x, y)`: o dono reposiciona a própria superfície na tela.
 /// O display server compõe no novo endereço a partir do próximo quadro.
 pub const SYS_SURFACE_MOVE: u64 = 61;
+/// `system_info(&SystemInfo)`: retrato do sistema (uptime, RAM, resolução,
+/// contagem de processos, prioridade do chamador). Usado por `systemfetch` e
+/// `top`.
+pub const SYS_SYSTEM_INFO: u64 = 62;

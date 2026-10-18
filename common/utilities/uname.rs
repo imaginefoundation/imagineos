@@ -114,7 +114,7 @@ fn user_main(
     }
     let mut separator = false;
     write_field(fields.system, SYSTEM, &mut separator)?;
-    write_field(fields.node, NODE, &mut separator)?;
+    write_field(fields.node, CODENAME, &mut separator)?;
     write_field(fields.release, RELEASE, &mut separator)?;
     if fields.version {
         if separator {
