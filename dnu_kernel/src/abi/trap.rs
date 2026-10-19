@@ -65,6 +65,8 @@ pub const EMFILE: i64 = -24;
 pub const ENOSPC: i64 = -28;
 #[allow(dead_code)]
 pub const ESPIPE: i64 = -29;
+/// `futex`/`nanosleep` com prazo: o tempo acabou antes do evento.
+pub const ETIMEDOUT: i64 = -110;
 #[allow(dead_code)]
 pub const ERANGE: i64 = -34;
 pub const ENOSYS: i64 = -38;

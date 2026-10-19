@@ -179,6 +179,115 @@ pub struct UserArg {
     pub length: u64,
 }
 
+// ------------------------------------------------------------------------------
+// Tipos de suporte à biblioteca padrão (dnu-std)
+// ------------------------------------------------------------------------------
+/// Descriptor de uma thread criada por `SYS_THREAD_CREATE`.
+///
+/// A thread nova nasce no mesmo espaço de endereço do processo: memória,
+/// descritores e credenciais são compartilhados. O que é próprio de cada thread
+/// é a pilha (de kernel e de usuário) e o estado de FPU/SSE.
+///
+/// `entry` é o endereço da função que a thread começa a executar (recebe
+/// `argument` em `rdi`); ao retornar, o kernel chama `SYS_THREAD_EXIT(0)`
+/// implicitamente. `stack_top` é o topo da pilha de usuário já alocada pelo
+/// chamador (a `std` aloca com `mmap`); `0` significa "o kernel escolhe".
+/// `tls` é o valor gravado em `fs_base` para o TLS da thread (0 = nenhum).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThreadCreate {
+    /// Função de entrada da thread (`fn(argument)`).
+    pub entry: u64,
+    /// Valor entregue em `rdi` à função de entrada.
+    pub argument: u64,
+    /// Topo da pilha de usuário da thread (0 = o kernel escolhe).
+    pub stack_top: u64,
+    /// Base do TLS da thread, gravada em `fs_base` (0 = não mexe).
+    pub tls: u64,
+}
+
+/// `futex(&word, op, value, &timeout, ...)`: operações suportadas.
+///
+/// O subconjunto abaixo cobre `Mutex` (WAIT/WAKE), `Condvar`/`park` (WAKE com
+/// contagem) e timeouts (`*_BITSET` com um `Timespec`). A semântica é a mesma do
+/// futex do Linux: a espera é **revalidada** sob o bloqueio do escalonador para
+/// não perder um `wake` que chegue entre a leitura de `word` e o bloqueio.
+pub const FUTEX_WAIT: u64 = 0;
+/// `futex(&word, FUTEX_WAKE, count, ...)`: acorda até `count` threads.
+pub const FUTEX_WAKE: u64 = 1;
+/// Como `FUTEX_WAIT`, mas a espera expira no `Timespec` informado.
+pub const FUTEX_WAIT_BITSET: u64 = 9;
+/// Como `FUTEX_WAKE`, restrito ao conjunto de bits indicado em `r8`.
+pub const FUTEX_WAKE_BITSET: u64 = 10;
+/// Máscara que seleciona todas as threads (`FUTEX_BITSET_MATCH_ANY`).
+pub const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
+
+/// Relógios de `SYS_CLOCK_GETTIME`.
+/// Tempo real (desde a epoch), ajustável — base de `SystemTime`.
+pub const CLOCK_REALTIME: u64 = 0;
+/// Relógio monótono (nunca retrocede) — base de `Instant` e de `nanosleep`.
+pub const CLOCK_MONOTONIC: u64 = 1;
+
+/// Intervalo de tempo em segundos + nanossegundos.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timespec {
+    pub seconds: i64,
+    pub nanoseconds: i64,
+}
+
+/// Flags de `SYS_MMAP`.
+/// Mapeamento anônimo (sem arquivo por trás): só páginas zeroadas.
+/// A `std` usa isto para o heap e as pilhas de thread.
+pub const MAP_ANONYMOUS: u64 = 1 << 0;
+/// Mapeamento privado (copy-on-write num `fork` futuro).
+pub const MAP_PRIVATE: u64 = 1 << 1;
+/// Exige um endereço exato em `address` (falha se já estiver ocupado).
+pub const MAP_FIXED: u64 = 1 << 2;
+
+/// Proteções de `SYS_MMAP` (bit a bit).
+pub const PROT_READ: u64 = 1 << 0;
+pub const PROT_WRITE: u64 = 1 << 1;
+pub const PROT_EXEC: u64 = 1 << 2;
+
+/// Tamanho de uma página de usuário, compartilhado por `mmap`/`munmap`.
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Maior `length` aceito por uma única `mmap`.
+///
+/// Sem este limite uma chamada com `length = u64::MAX` derrubaria o kernel ao
+/// arredondar a faixa; 64 MiB é muito acima do que a `alloc` da `std` pede de
+/// uma vez e continua cabendo com folga no espaço reservado a `mmap`.
+pub const MMAP_MAX_LENGTH: u64 = 64 * 1024 * 1024;
+
+/// Base da região de `mmap` anônimo — logo acima da heap de `sbrk`.
+///
+/// A heap cresce em `USER_HEAP_START` até `USER_HEAP_LIMIT` (64 MiB), então a
+/// região anônima começa depois dela. Fica longe das superfícies
+/// (`SURFACE_REGION_BASE`), da pilha (`0x7fff_ffff_0000`) e do framebuffer
+/// (`0x4000_0000_0000`).
+///
+/// O kernel distribui as regiões em ordem crescente a partir daqui; o
+/// userspace nunca depende de endereços fixos, só do que `mmap` devolve.
+pub const MMAP_REGION_BASE: u64 = 0x0000_0002_0000_0000;
+
+/// Teto da região de `mmap` anônimo (exclusivo).
+///
+/// 256 MiB de espaço virtual: com `MMAP_MAX_LENGTH` = 64 MiB isso comporta
+/// várias alocações simultâneas. Como só as páginas tocadas consomem RAM
+/// física (o mapeamento é sob demanda), o teto é generoso sem custar memória.
+pub const MMAP_REGION_END: u64 = 0x0000_0003_0000_0000;
+
+/// Maior número de threads (além da principal) por processo.
+///
+/// Cada thread consome um slot do escalonador e uma pilha de kernel de 128 KiB
+/// (`KERNEL_STACKS`), então o limite é baixo de propósito. O total de threads
+/// do sistema não passa de `MAX_PROCESSES`.
+pub const MAX_THREADS_PER_PROCESS: usize = 8;
+
+/// Pilha de usuário que o kernel aloca quando `ThreadCreate.stack_top == 0`.
+pub const THREAD_STACK_SIZE: u64 = 128 * 1024;
+
 /// Describes how a child created by `SYS_SPAWN` should see its standard
 /// descriptors. Each field is a descriptor number owned by the *caller*: the
 /// kernel duplicates it into the child, so `0`, `1`, `2` keep meaning

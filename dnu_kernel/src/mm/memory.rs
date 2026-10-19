@@ -5,6 +5,13 @@ use limine::memory_map::{Entry, EntryType};
 
 const PAGE_SIZE: u64 = 4096;
 const MAX_REGIONS: usize = 128;
+/// Frames devolvidos por `free_frame` e ainda não reutilizados.
+///
+/// O alocador é bump-only por região: sem esta lista, `munmap` só poderia
+/// "esquecer" o mapeamento e os frames ficariam perdidos até o reboot. A pilha
+/// de reciclagem dá ao userspace (`mmap`/`munmap`, base do `GlobalAlloc` da
+/// `std`) a possibilidade de crescer e encolher de verdade.
+const MAX_FREE_FRAMES: usize = 4096;
 
 #[derive(Clone, Copy)]
 struct Region {
@@ -21,6 +28,9 @@ struct FrameAllocator {
     region_count: usize,
     current_region: usize,
     hhdm_offset: u64,
+    /// Endereços físicos reciclados por `free_frame` (pilha LIFO).
+    free_frames: [u64; MAX_FREE_FRAMES],
+    free_count: usize,
 }
 
 impl FrameAllocator {
@@ -30,6 +40,8 @@ impl FrameAllocator {
             region_count: 0,
             current_region: 0,
             hhdm_offset: 0,
+            free_frames: [0; MAX_FREE_FRAMES],
+            free_count: 0,
         }
     }
 }
@@ -57,6 +69,8 @@ pub fn init(entries: &[&Entry], hhdm_offset: u64, reserved: &[PhysicalRange]) ->
     allocator.region_count = 0;
     allocator.current_region = 0;
     allocator.hhdm_offset = hhdm_offset;
+    allocator.free_frames = [0; MAX_FREE_FRAMES];
+    allocator.free_count = 0;
 
     for entry in entries {
         if entry.entry_type != EntryType::USABLE || allocator.region_count == MAX_REGIONS {
@@ -117,6 +131,16 @@ fn add_unreserved_regions(
 
 pub fn allocate_frame() -> Option<Frame> {
     let allocator = unsafe { &mut *ALLOCATOR.0.get() };
+    // Reciclagem primeiro: frames devolvidos por `free_frame`.
+    if allocator.free_count > 0 {
+        allocator.free_count -= 1;
+        let physical_address = allocator.free_frames[allocator.free_count];
+        let virtual_address = physical_address.checked_add(allocator.hhdm_offset)? as *mut u8;
+        return Some(Frame {
+            physical_address,
+            virtual_address,
+        });
+    }
     while allocator.current_region < allocator.region_count {
         let region = &mut allocator.regions[allocator.current_region];
         if region.next < region.end {
@@ -134,6 +158,25 @@ pub fn allocate_frame() -> Option<Frame> {
         allocator.current_region += 1;
     }
     None
+}
+
+/// Devolve um frame ao alocador para reutilização por `allocate_frame`.
+///
+/// Chamado por `munmap`. Frames reciclados não voltam às regiões bump; vão para
+/// uma pilha LIFO de tamanho fixo. Se a pilha encher, o frame é simplesmente
+/// abandonado (o sistema continua correto, só não recicla naquele momento).
+pub fn free_frame(physical_address: u64) -> bool {
+    let allocator = unsafe { &mut *ALLOCATOR.0.get() };
+    if allocator.free_count >= MAX_FREE_FRAMES {
+        return false;
+    }
+    // Só aceita frames alinhados à página e dentro de uma região conhecida.
+    if physical_address & (PAGE_SIZE - 1) != 0 {
+        return false;
+    }
+    allocator.free_frames[allocator.free_count] = physical_address;
+    allocator.free_count += 1;
+    true
 }
 
 pub fn phys_to_virt(physical_address: u64) -> Option<*mut u8> {
@@ -154,6 +197,8 @@ pub fn usage() -> (u64, u64) {
     for region in allocator.regions.iter().take(allocator.region_count) {
         free += region.end.saturating_sub(region.next);
     }
+    // Frames reciclados por `free_frame` também estão disponíveis.
+    free += (allocator.free_count as u64) * PAGE_SIZE;
     // `total` = frames já entregues + o que ainda resta. As regiões guardam
     // apenas o ponteiro `next`, então o montante entregue vem do contador.
     let total = ALLOCATED_BYTES.load(Ordering::Relaxed) + free;

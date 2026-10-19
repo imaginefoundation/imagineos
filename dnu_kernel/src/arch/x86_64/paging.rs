@@ -21,6 +21,8 @@ pub enum MapError {
     InvalidAddress,
     OutOfMemory,
     AlreadyMapped,
+    /// A faixa cruza uma página mapeada no meio (só ocorre em `try_map_range`).
+    PartiallyMapped,
 }
 
 impl AddressSpace {
@@ -76,6 +78,116 @@ impl AddressSpace {
         }
         *entry = frame.physical_address | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER;
         Ok(frame.virtual_address)
+    }
+
+    /// Mapeia uma faixa contígua de páginas de usuário, **tudo ou nada**.
+    ///
+    /// Base do `mmap`: verifica a faixa inteira antes de tocar em qualquer PTE,
+    /// então uma falha no meio (`AlreadyMapped`, falta de memória) desfaz as
+    /// páginas já instaladas em vez de deixar o processo com um mapeamento
+    /// parcial invisível. A faixa não precisa estar alinhada ao início da
+    /// página: páginas parciais são mapeadas por inteiro, como o POSIX manda.
+    pub fn try_map_range(&self, start: u64, length: u64) -> Result<(), MapError> {
+        if length == 0 {
+            return Err(MapError::InvalidAddress);
+        }
+        let Some(end) = start.checked_add(length) else {
+            return Err(MapError::InvalidAddress);
+        };
+        let first = start & !(PAGE_SIZE - 1);
+        let last = (end - 1) & !(PAGE_SIZE - 1);
+        if first < USER_MIN || last >= USER_MAX {
+            return Err(MapError::InvalidAddress);
+        }
+
+        // Primeiro, nenhuma página pode estar presente: mapear por cima
+        // corromperia memória que o chamador não pediu para descartar.
+        let mut page = first;
+        while page <= last {
+            if self.translate(page).is_some() {
+                return Err(MapError::AlreadyMapped);
+            }
+            page = page.checked_add(PAGE_SIZE).ok_or(MapError::InvalidAddress)?;
+        }
+
+        let mut mapped = first;
+        page = first;
+        while page <= last {
+            match self.map_user_page(page) {
+                Ok(_) => {
+                    // `mapped` é o fim exclusivo do que já foi instalado.
+                    mapped = page.checked_add(PAGE_SIZE).ok_or(MapError::InvalidAddress)?;
+                }
+                Err(MapError::AlreadyMapped) => {
+                    // Corrida com outra thread do mesmo processo (o kernel não
+                    // tem lock de espaço hoje): desfaz o que fizemos.
+                    self.unmap_range_best_effort(first, mapped);
+                    return Err(MapError::AlreadyMapped);
+                }
+                Err(error) => {
+                    self.unmap_range_best_effort(first, mapped);
+                    return Err(error);
+                }
+            }
+            page = page.checked_add(PAGE_SIZE).ok_or(MapError::InvalidAddress)?;
+        }
+        Ok(())
+    }
+
+    /// Desmapeia a faixa `[from, to)` depois de uma falha no meio de `try_map_range`.
+    fn unmap_range_best_effort(&self, from: u64, to: u64) {
+        let mut page = from;
+        while page < to {
+            self.unmap_user_page(page);
+            page = page.saturating_add(PAGE_SIZE);
+        }
+    }
+
+    /// Desmapeia uma página de usuário e devolve o frame ao alocador.
+    ///
+    /// Base de `munmap`. Se a página não estiver mapeada, devolve `false` (o
+    /// chamador trata como sucesso, pois `munmap` de uma faixa já livre é válido).
+    /// As tabelas de páginas intermediárias são mantidas mapeadas; só o PTE do
+    /// último nível é limpo. É a contrapartida de [`map_user_page`] necessária
+    /// para o `GlobalAlloc` da `std` liberar memória de verdade.
+    pub fn unmap_user_page(&self, virtual_address: u64) -> bool {
+        if !(USER_MIN..USER_MAX).contains(&virtual_address) {
+            return false;
+        }
+        let page_address = virtual_address & !(PAGE_SIZE - 1);
+        let indices = [
+            ((page_address >> 39) & 0x1ff) as usize,
+            ((page_address >> 30) & 0x1ff) as usize,
+            ((page_address >> 21) & 0x1ff) as usize,
+            ((page_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut table_physical = self.root_physical;
+        for index in indices.iter().take(3) {
+            let Some(table) = table_pointer(table_physical) else {
+                return false;
+            };
+            let entry = unsafe { *table.add(*index) };
+            if entry & ENTRY_PRESENT == 0 {
+                return false;
+            }
+            table_physical = entry & ADDRESS_MASK;
+        }
+        let Some(table) = table_pointer(table_physical) else {
+            return false;
+        };
+        let entry = unsafe { &mut *table.add(indices[3]) };
+        if *entry & ENTRY_PRESENT == 0 {
+            return false;
+        }
+        let physical_address = *entry & ADDRESS_MASK;
+        *entry = 0;
+        // Invalida o TLB para este endereço; sem isto, acessos antigos
+        // continuariam a acertar a tradução desmapeada.
+        unsafe {
+            core::arch::asm!("invlpg [{}]", in(reg) page_address, options(nostack, preserves_flags));
+        }
+        memory::free_frame(physical_address);
+        true
     }
 
     /// Cria um novo espaço de endereço com uma **cópia** de todas as páginas de
@@ -261,6 +373,14 @@ pub fn map_framebuffer_range(
         // há controle de PAT, então mantemos memória cacheável padrão.
         *entry = physical_address | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER;
         memory::phys_to_virt(physical_address)
+    }
+
+    /// `translate` para uma página inteira, sem o deslocamento interno.
+    ///
+    /// Usado por `mmap` para descobrir se a faixa já está ocupada sem precisar
+    /// de um endereço específico dentro dela.
+    pub fn page_is_present(&self, page: u64) -> bool {
+        self.translate(page & !(PAGE_SIZE - 1)).is_some()
     }
 
     pub fn translate(&self, virtual_address: u64) -> Option<*mut u8> {

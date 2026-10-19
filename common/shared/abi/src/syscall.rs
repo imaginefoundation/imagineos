@@ -106,3 +106,42 @@ pub const SYS_SURFACE_MOVE: u64 = 61;
 /// contagem de processos, prioridade do chamador). Usado por `systemfetch` e
 /// `top`.
 pub const SYS_SYSTEM_INFO: u64 = 62;
+
+// ------------------------------------------------------------------------------
+// Base para a biblioteca padrão (dnu-std) do userspace.
+//
+// Sem estas primitivas não há como construir uma `std` de Rust: `std::thread`
+// precisa de `clone`/TLS, `std::sync` precisa de `futex`, `std::time::Instant`
+// e `std::thread::sleep` precisam de um relógio monótono e de `nanosleep`, e o
+// `alloc` global precisa de `mmap`/`munmap` para crescer e devolver memória.
+// ------------------------------------------------------------------------------
+/// `thread_create(&ThreadCreate) -> tid`: cria uma thread no espaço de endereço
+/// do processo atual. A thread nova compartilha memória, descritores e
+/// credenciais com o processo; cada thread tem sua própria pilha de kernel e de
+/// usuário. Devolve o `tid` (igual ao `pid` para a thread principal) ou um
+/// errno negativo.
+///
+/// A thread nova começa executando `ThreadCreate.entry`, com `ThreadCreate.argument`
+/// em `rdi`. Ao retornar, chama `thread_exit(0)` implicitamente.
+pub const SYS_THREAD_CREATE: u64 = 63;
+/// `thread_exit(status) -> !`: encerra a thread atual. Se for a última thread do
+/// processo, o processo inteiro termina com `status`.
+pub const SYS_THREAD_EXIT: u64 = 64;
+/// `gettid() -> tid`: identifica a thread atual (não confundir com `getpid`).
+pub const SYS_GETTID: u64 = 65;
+/// `futex(&word, op, value, &timeout) -> result`: primitiva de espera/notificação.
+/// Base de `Mutex`, `Condvar` e dos `park`/`unpark` da `std`. Ver `FUTEX_*`.
+pub const SYS_FUTEX: u64 = 66;
+/// `nanosleep(&Timespec, &Timespec) -> 0`: suspende a thread até o intervalo
+/// esgotar. Interrompido por sinal devolve `-EINTR`.
+pub const SYS_NANOSLEEP: u64 = 67;
+/// `clock_gettime(clockid, &Timespec) -> 0`: relógio monótono (`CLOCK_MONOTONIC`)
+/// ou de tempo real (`CLOCK_REALTIME`). Base de `Instant`/`SystemTime`.
+pub const SYS_CLOCK_GETTIME: u64 = 68;
+/// `mmap(address, length, protection, flags) -> address`: mapeia páginas de
+/// usuário sob demanda. Devolve o endereço base ou um errno negativo.
+pub const SYS_MMAP: u64 = 69;
+/// `munmap(address, length) -> 0`: desmapeia páginas e devolve os frames ao
+/// alocador. O par `mmap`/`munmap` é o que permite ao `GlobalAlloc` da `std`
+/// crescer **e** liberar memória (o `sbrk` atual só cresce).
+pub const SYS_MUNMAP: u64 = 70;

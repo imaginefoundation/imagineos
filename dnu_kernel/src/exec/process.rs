@@ -13,6 +13,7 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::trap::TrapFrame;
 use crate::fpu;
@@ -25,6 +26,35 @@ use crate::exec::loader::{self, FrameLocation, LoadError};
 use crate::exec::space;
 
 pub(crate) const MAX_PROCESSES: usize = imagineos_abi::MAX_PROCESSES;
+
+/// Faixas anônimas simultâneas por processo (`mmap`).
+///
+/// A tabela é fixa e mora dentro do `Process` (que é `Copy` e nunca aloca); 32
+/// cobre com folga o uso de uma `std` rodando num processo (heap, pilhas de
+/// thread, buffers temporários). O que passar disso recebe `ENOMEM`.
+pub const MAX_MAPPINGS: usize = 32;
+
+/// Uma região anônima de `mmap`, já alinhada à página.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mapping {
+    pub start: u64,
+    pub length: u64,
+}
+
+impl Mapping {
+    pub const EMPTY: Self = Self {
+        start: 0,
+        length: 0,
+    };
+
+    pub const fn end(self) -> u64 {
+        self.start + self.length
+    }
+
+    fn overlaps(self, start: u64, end: u64) -> bool {
+        self.length != 0 && self.start < end && start < self.end()
+    }
+}
 // The synchronous DFS installer nests large journal transaction buffers.
 pub(crate) const KERNEL_STACK_SIZE: usize = 128 * 4096;
 // A full-featured shell keeps parsed commands, expanded words and redirection
@@ -109,6 +139,11 @@ impl Priority {
 #[derive(Clone, Copy)]
 pub struct Process {
     pub(crate) pid: usize,
+    /// Thread group id: o `pid` da **thread principal** do grupo. Para um
+    /// processo de uma só thread, `tgid == pid`. Threads criadas por
+    /// `thread_create` compartilham o `tgid` de quem as criou. É o valor que
+    /// `getpid` devolve (identidade do processo); `gettid` devolve `pid`.
+    pub(crate) tgid: usize,
     pub(crate) active: bool,
     pub(crate) stopped: bool,
     /// Processo que chamou `fork`/`spawn`. `0` significa "sem pai" (PID 1, que é
@@ -149,11 +184,23 @@ pub struct Process {
     pub(crate) signal_restorer: u64,
     pub(crate) signal_frame: Option<TrapFrame>,
     pub(crate) fpu_state: FpuState,
+    /// Endereço da palavra de futex em que esta thread está bloqueada (`0` =
+    /// nenhuma). É o `&word` do `futex` do Linux, no espaço de usuário.
+    pub(crate) futex_address: u64,
+    /// Máscara de bits do futex (`FUTEX_BITSET_MATCH_ANY` por padrão).
+    pub(crate) futex_bitset: u64,
+    /// Instante (µs desde o boot) em que uma espera temporizada expira. `0` =
+    /// sem prazo. Usado por `nanosleep` e `futex` com timeout.
+    pub(crate) wake_deadline: u64,
+    /// Faixas anônimas vivas de `mmap`. Vazio em processos que nunca mapearam.
+    pub(crate) mappings: [Mapping; MAX_MAPPINGS],
+    pub(crate) mapping_count: usize,
 }
 
 impl Process {
     pub const EMPTY: Self = Self {
         pid: 0,
+        tgid: 0,
         active: false,
         stopped: false,
         parent: 0,
@@ -185,6 +232,11 @@ impl Process {
         signal_restorer: 0,
         signal_frame: None,
         fpu_state: FpuState::EMPTY,
+        futex_address: 0,
+        futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        wake_deadline: 0,
+        mappings: [Mapping::EMPTY; MAX_MAPPINGS],
+        mapping_count: 0,
     };
 }
 
@@ -311,9 +363,62 @@ pub fn start() -> ! {
     }
 }
 
+/// `tgid` da thread atual — o valor que `getpid` devolve.
 pub fn current_pid() -> usize {
     let scheduler = unsafe { &*SCHEDULER.0.get() };
+    scheduler.processes[scheduler.current].tgid
+}
+
+/// `tid` da thread atual (o `pid` do slot) — o valor de `gettid`.
+pub fn current_tid() -> usize {
+    let scheduler = unsafe { &*SCHEDULER.0.get() };
     scheduler.processes[scheduler.current].pid
+}
+
+// ---------------------------------------------------------------------------
+// Relógio para esperas temporizadas
+// ---------------------------------------------------------------------------
+
+/// Último valor entregue por `monotonic_microseconds`.
+///
+/// O TSC pode andar para trás em máquinas sem `invariant TSC`; guardar o máximo
+/// já visto preserva o contrato de `Instant`/`nanosleep` de nunca retroceder.
+static MONOTONIC_MICROSECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Microssegundos monotônicos desde o boot.
+pub(crate) fn monotonic_microseconds() -> u64 {
+    let now = crate::time::elapsed_microseconds().unwrap_or(0);
+    let mut previous = MONOTONIC_MICROSECONDS.load(Ordering::Relaxed);
+    while now > previous {
+        match MONOTONIC_MICROSECONDS.compare_exchange_weak(
+            previous,
+            now,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return now,
+            Err(observed) => previous = observed,
+        }
+    }
+    previous
+}
+
+/// Grava o prazo de despertar da thread atual (`None` = sem prazo).
+pub fn set_current_wake_deadline(deadline: Option<u64>) {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    scheduler.processes[scheduler.current].wake_deadline = deadline.unwrap_or(0);
+}
+
+/// Marca a thread atual como bloqueada na palavra de futex `address`.
+pub fn set_current_futex(address: u64, bitset: u64) {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    let process = &mut scheduler.processes[scheduler.current];
+    process.futex_address = address;
+    process.futex_bitset = if bitset == 0 {
+        imagineos_abi::FUTEX_BITSET_MATCH_ANY
+    } else {
+        bitset
+    };
 }
 
 /// Salva o estado FPU/SSE do processo atualmente em execução.
@@ -455,8 +560,18 @@ fn select_candidate(scheduler: &Scheduler) -> Option<usize> {
     best
 }
 
+/// Uma thread só é escalonável se estiver ativa, não parada, não zumbi, não
+/// bloqueada em `waitpid` nem esperando em `futex`.
+///
+/// `wake_deadline` **não** bloqueia por si: `expire_timed_waits` libera as
+/// esperas vencidas antes de cada escolha. Assim uma thread dormindo nunca
+/// impede a escolha das demais.
 fn is_runnable(process: &Process) -> bool {
-    process.active && !process.stopped && !process.zombie && process.waiting_for == 0
+    process.active
+        && !process.stopped
+        && !process.zombie
+        && process.waiting_for == 0
+        && process.futex_address == 0
 }
 
 /// Indica se algum processo está bloqueado em `waitpid`.
@@ -681,7 +796,7 @@ fn process_state(process: &Process) -> u32 {
         imagineos_abi::PROCESS_ZOMBIE
     } else if process.stopped {
         imagineos_abi::PROCESS_STOPPED
-    } else if process.waiting_for != 0 {
+    } else if process.waiting_for != 0 || process.futex_address != 0 {
         imagineos_abi::PROCESS_WAITING
     } else {
         imagineos_abi::PROCESS_RUNNING
@@ -692,6 +807,120 @@ fn process_state(process: &Process) -> u32 {
 pub fn current_priority() -> u8 {
     let scheduler = unsafe { &*SCHEDULER.0.get() };
     scheduler.processes[scheduler.current].priority as u8
+}
+
+// ---------------------------------------------------------------------------
+// Esperas passivas: futex, nanosleep e o alarme que as acorda
+// ---------------------------------------------------------------------------
+
+/// Bloqueia a thread atual e cede a CPU.
+///
+/// Devolve `(frame, switched)`. `switched == false` significa que a própria
+/// thread voltou a ser escolhida porque nenhuma outra estava elegível; o
+/// chamador decide o que fazer (o `futex` devolve `EAGAIN`, o `nanosleep`
+/// termina como se o prazo tivesse vencido — o runtime troca de ideia).
+///
+/// Com `timed`, e sem mais ninguém para rodar, a CPU dorme em `hlt` até o prazo
+/// em vez de girar: uma `nanosleep` sozinha no sistema não deve queimar CPU.
+pub(crate) fn block_current(frame: *mut TrapFrame, timed: bool) -> (*mut TrapFrame, bool) {
+    let (next, switched) = schedule_ex(frame, false);
+    if !switched && timed {
+        idle_until_next_deadline();
+    }
+    (next, switched)
+}
+
+/// Acorda até `count` threads bloqueadas em `address` cujo conjunto de bits
+/// intercepta `bitset`. Devolve quantas foram acordadas.
+pub fn wake_futex(address: u64, count: usize, bitset: u64) -> usize {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    let mut woken = 0usize;
+    for process in scheduler.processes.iter_mut() {
+        if woken >= count {
+            break;
+        }
+        if !process.active || process.zombie || process.futex_address != address {
+            continue;
+        }
+        if process.futex_bitset & bitset == 0 {
+            continue;
+        }
+        process.futex_address = 0;
+        process.wake_deadline = 0;
+        // Espera é I/O-bound: quem acorda volta ao topo da fila.
+        process.priority = Priority::DEFAULT;
+        woken += 1;
+    }
+    woken
+}
+
+/// Libera as esperas cujo prazo já venceu.
+///
+/// O `RAX` do `TrapFrame` salvo é o valor que o `iretq` devolve ao userspace:
+/// `ETIMEDOUT` se a espera era um `futex` com timeout, `0` se era `nanosleep`.
+pub(crate) fn expire_timed_waits(scheduler: &mut Scheduler) {
+    let now = monotonic_microseconds();
+    for index in 0..MAX_PROCESSES {
+        let process = &mut scheduler.processes[index];
+        if !process.active || process.wake_deadline == 0 || now < process.wake_deadline {
+            continue;
+        }
+        process.wake_deadline = 0;
+        let result = if process.futex_address != 0 {
+            process.futex_address = 0;
+            crate::abi::trap::ETIMEDOUT
+        } else {
+            0
+        };
+        if !process.frame.is_null() {
+            unsafe {
+                (*process.frame).rax = result as u64;
+            }
+        }
+    }
+}
+
+fn any_runnable(scheduler: &Scheduler) -> bool {
+    scheduler.processes.iter().any(is_runnable)
+}
+
+fn next_deadline(scheduler: &Scheduler) -> Option<u64> {
+    scheduler
+        .processes
+        .iter()
+        .filter(|process| process.active && process.wake_deadline != 0)
+        .map(|process| process.wake_deadline)
+        .min()
+}
+
+/// Dorme no próprio `yield` (`hlt`) até o prazo da espera mais próxima.
+///
+/// O timer de 100 Hz acorda a CPU mesmo sem interrupção de hardware, então o
+/// prazo é cumprido na granularidade do tick (~10 ms) — a imprecisão normal de
+/// um kernel sem timer de alta resolução.
+fn idle_until_next_deadline() {
+    let Some(deadline) = next_deadline(unsafe { &*SCHEDULER.0.get() }) else {
+        return;
+    };
+    while monotonic_microseconds() < deadline {
+        unsafe {
+            asm!("sti", "hlt", "cli", options(nomem, nostack));
+        }
+        expire_timed_waits(unsafe { &mut *SCHEDULER.0.get() });
+        if any_runnable(unsafe { &*SCHEDULER.0.get() }) {
+            return;
+        }
+    }
+}
+
+/// Mantém a thread atual como única executável e dorme até o prazo dela.
+///
+/// Usado por `nanosleep`: a thread chamadora já tem `wake_deadline` e nenhuma
+/// outra está pronta, então em vez de `yield` em laço apertado a CPU entra em
+/// `hlt` e só é acordada pelo timer (ou por interrupção de hardware).
+fn sleep_current_until_deadline(frame: *mut TrapFrame) -> *mut TrapFrame {
+    idle_until_next_deadline();
+    frame
 }
 
 /// `schedule` que também informa se houve troca de processo.
@@ -742,6 +971,23 @@ fn schedule(frame: *mut TrapFrame, exiting: bool) -> *mut TrapFrame {
             crate::framebuffer::set_active(true);
             crate::framebuffer::clear();
         }
+        // Threads secundárias do grupo não têm pai nem superfície: liberar o
+        // slot na hora evita que o `waitpid` do init colete uma thread como se
+        // fosse um processo filho.
+        let tgid = scheduler.processes[current].tgid;
+        let pid = scheduler.processes[current].pid;
+        if tgid != pid {
+            for index in 0..MAX_PROCESSES {
+                let sibling = scheduler.processes[index];
+                if sibling.active
+                    && sibling.tgid == tgid
+                    && sibling.pid != pid
+                    && !sibling.zombie
+                {
+                    scheduler.processes[index] = Process::EMPTY;
+                }
+            }
+        }
         // Um processo que esperava por este filho pode voltar a rodar.
         let finished = scheduler.processes[current].pid;
         for index in 0..MAX_PROCESSES {
@@ -755,6 +1001,13 @@ fn schedule(frame: *mut TrapFrame, exiting: bool) -> *mut TrapFrame {
     // round-robin entre iguais. `schedule` também roda no `yield`, no `exit` e
     // quando um filho fica pronto, então manter uma única função garante que a
     // política não dependa de quem pediu a troca.
+    //
+    // Antes de escolher, acorda quem teve o prazo vencido: `nanosleep` e
+    // `futex` com timeout são esperas passivas.
+    expire_timed_waits(scheduler);
+    if !exiting && !any_runnable(scheduler) && next_deadline(scheduler).is_some() {
+        return sleep_current_until_deadline(frame);
+    }
     if let Some(candidate) = select_candidate(scheduler) {
         scheduler.current = candidate;
         // Fatia nova: o processo escolhido começa com o contador de ticks zerado.
@@ -808,6 +1061,24 @@ pub fn execve_current(
             (*frame).rax = (-13i64) as u64;
         }
         return frame;
+    }
+    // `execve` multithread não é implementado: as outras threads do grupo
+    // continuariam no espaço de endereço antigo, órfãs. `EAGAIN` é o que o
+    // Linux faz quando a troca não pode ser atômica.
+    {
+        let scheduler = unsafe { &*SCHEDULER.0.get() };
+        let tgid = scheduler.processes[scheduler.current].tgid;
+        let threads = scheduler
+            .processes
+            .iter()
+            .filter(|process| process.active && process.tgid == tgid)
+            .count();
+        if threads > 1 {
+            unsafe {
+                (*frame).rax = (-11i64) as u64;
+            }
+            return frame;
+        }
     }
     let Some(image) = crate::ramfs::read(path) else {
         unsafe {
@@ -1062,6 +1333,7 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
     let parent = scheduler.processes[parent_slot];
     scheduler.processes[slot] = Process {
         pid,
+        tgid: pid,
         active: true,
         stopped: false,
         parent: parent_pid,
@@ -1088,6 +1360,11 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
         signal_restorer: parent.signal_restorer,
         signal_frame: None,
         fpu_state,
+        futex_address: 0,
+        futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        wake_deadline: 0,
+        mappings: [Mapping::EMPTY; MAX_MAPPINGS],
+        mapping_count: 0,
     };
     scheduler.count = scheduler.count.max(slot + 1);
     // O filho começa com a fatia zerada, garantindo que ele execute o quantum
@@ -1472,6 +1749,279 @@ pub fn copy_from_current_user(address: u64, output: &mut [u8]) -> bool {
 
 pub fn copy_to_current_user(address: u64, input: &[u8]) -> bool {
     space::copy_to_current(address, input)
+}
+
+// ---------------------------------------------------------------------------
+// Threads
+// ---------------------------------------------------------------------------
+
+/// Cria uma thread no espaço de endereço do processo atual.
+///
+/// A thread herda memória, descritores, credenciais e handlers de sinal; o que
+/// é próprio dela é o slot do escalonador, a pilha de kernel, a pilha de
+/// usuário e o `wake_deadline`. Não é registrada como filha (`parent`) porque
+/// `waitpid` coleciona processos, não threads.
+pub fn create_thread(
+    request: imagineos_abi::ThreadCreate,
+    _frame: *mut TrapFrame,
+) -> Result<usize, i64> {
+    let (slot, tid, parent_slot) = {
+        let scheduler = unsafe { &*SCHEDULER.0.get() };
+        let parent_slot = scheduler.current;
+        let parent = scheduler.processes[parent_slot];
+        if !parent.active {
+            return Err(-3 /* ESRCH */);
+        }
+        let threads = scheduler
+            .processes
+            .iter()
+            .filter(|process| process.active && process.tgid == parent.tgid)
+            .count();
+        if threads >= imagineos_abi::MAX_THREADS_PER_PROCESS {
+            return Err(-11 /* EAGAIN */);
+        }
+        let Some(slot) = scheduler.processes.iter().position(|process| !process.active) else {
+            return Err(-11 /* EAGAIN */);
+        };
+        let tid = scheduler
+            .processes
+            .iter()
+            .map(|process| process.pid)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        (slot, tid, parent_slot)
+    };
+
+    let parent = unsafe { (*SCHEDULER.0.get()).processes[parent_slot] };
+    let Some(address_space) = parent.address_space else {
+        return Err(-12 /* ENOMEM */);
+    };
+
+    // Pilha de usuário: honra a do chamador (já mapeada) ou aloca uma nova no
+    // espaço do processo, logo abaixo da pilha principal.
+    let stack_top = if request.stack_top != 0 {
+        let aligned = request.stack_top & !(PAGE_SIZE - 1);
+        if address_space.translate(aligned.saturating_sub(1)).is_none() {
+            return Err(-14 /* EFAULT */);
+        }
+        request.stack_top
+    } else {
+        let top = USER_STACK_TOP
+            - (parent.tgid as u64 % 64 + 1) * (imagineos_abi::THREAD_STACK_SIZE + PAGE_SIZE);
+        let start = top - imagineos_abi::THREAD_STACK_SIZE;
+        if address_space
+            .try_map_range(start, imagineos_abi::THREAD_STACK_SIZE)
+            .is_err()
+        {
+            return Err(-12 /* ENOMEM */);
+        }
+        top
+    };
+
+    // Frame inicial: a thread começa em `entry(argument)`, em ring 3.
+    let stacks = unsafe { &mut *KERNEL_STACKS.0.get() };
+    let kernel_stack_top = stacks.0[slot].as_mut_ptr() as u64 + KERNEL_STACK_SIZE as u64;
+    let thread_frame = (kernel_stack_top as usize - size_of::<TrapFrame>()) as *mut TrapFrame;
+    unsafe {
+        thread_frame.write(TrapFrame {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rbp: 0,
+            rdi: request.argument,
+            rsi: 0,
+            rdx: 0,
+            rcx: 0,
+            rbx: 0,
+            rax: 0,
+            rip: request.entry,
+            cs: gdt::USER_CODE_SELECTOR,
+            rflags: 0x202,
+            rsp: stack_top,
+            ss: gdt::USER_DATA_SELECTOR,
+        });
+    }
+
+    let mut fpu_state = FpuState::EMPTY;
+    unsafe {
+        fpu::reset(fpu_state.as_mut_ptr());
+    }
+
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    scheduler.processes[slot] = Process {
+        pid: tid,
+        tgid: parent.tgid,
+        active: true,
+        stopped: false,
+        parent: parent.parent,
+        zombie: false,
+        exit_status: 0,
+        waiting_for: 0,
+        quantum: 0,
+        priority: parent.priority,
+        slice_used: 0,
+        allows_disk_install: parent.allows_disk_install,
+        uid: parent.uid,
+        gid: parent.gid,
+        is_admin: parent.is_admin,
+        username: parent.username,
+        username_length: parent.username_length,
+        frame: thread_frame,
+        address_space: Some(address_space),
+        heap_end: parent.heap_end,
+        name: parent.name,
+        pending_signals: 0,
+        signal_actions: parent.signal_actions,
+        signal_restorer: parent.signal_restorer,
+        signal_frame: None,
+        fpu_state,
+        futex_address: 0,
+        futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        wake_deadline: 0,
+        mappings: parent.mappings,
+        mapping_count: parent.mapping_count,
+    };
+    scheduler.count = scheduler.count.max(slot + 1);
+    Ok(tid)
+}
+
+/// `thread_exit(status)`: encerra a thread atual.
+///
+/// Era a última thread do grupo (ou a principal): o processo termina pelo
+/// caminho normal, virando zumbi para o `waitpid` do pai. Caso contrário só o
+/// slot da thread é liberado, e as demais continuam.
+pub fn exit_thread(frame: *mut TrapFrame, status: i32) -> *mut TrapFrame {
+    let (slot, tgid, pid, is_main) = {
+        let scheduler = unsafe { &*SCHEDULER.0.get() };
+        let slot = scheduler.current;
+        let process = scheduler.processes[slot];
+        (slot, process.tgid, process.pid, process.tgid == process.pid)
+    };
+    let other_threads = unsafe {
+        (*SCHEDULER.0.get())
+            .processes
+            .iter()
+            .any(|process| process.active && process.tgid == tgid && process.pid != pid)
+    };
+    if is_main || !other_threads {
+        return exit_current(frame, status);
+    }
+    // A liberação acontece **depois** de `schedule`: o slot em `current` ainda
+    // é o da thread enquanto a CPU não trocar de contexto.
+    let next = schedule(frame, true);
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    scheduler.processes[slot] = Process::EMPTY;
+    next
+}
+
+// ---------------------------------------------------------------------------
+// Memória mapeada (`mmap`)
+// ---------------------------------------------------------------------------
+
+/// Registra uma faixa anônima e instala as suas páginas.
+///
+/// Devolve `false` quando a tabela do processo está cheia ou o espaço não tem
+/// como instalar o mapeamento; nada fica mapeado nesse caso.
+pub fn add_mapping(mapping: Mapping) -> bool {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    let process = &mut scheduler.processes[scheduler.current];
+    if process.mapping_count >= MAX_MAPPINGS {
+        return false;
+    }
+    let Some(address_space) = process.address_space else {
+        return false;
+    };
+    if address_space
+        .try_map_range(mapping.start, mapping.length)
+        .is_err()
+    {
+        return false;
+    }
+    process.mappings[process.mapping_count] = mapping;
+    process.mapping_count += 1;
+    true
+}
+
+/// Remove da tabela as faixas que se sobrepõem a `[start, start + length)`,
+/// sem desmapear (usado pelo `MAP_FIXED` antes de instalar a faixa nova).
+pub fn forget_mappings_in(start: u64, length: u64) {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    let process = &mut scheduler.processes[scheduler.current];
+    let end = start.saturating_add(length);
+    let mut write = 0;
+    for read in 0..process.mapping_count {
+        let mapping = process.mappings[read];
+        if !mapping.overlaps(start, end) {
+            process.mappings[write] = mapping;
+            write += 1;
+        }
+    }
+    for index in write..process.mapping_count {
+        process.mappings[index] = Mapping::EMPTY;
+    }
+    process.mapping_count = write;
+}
+
+/// Desmapeia as páginas da faixa e esquece a tabela.
+///
+/// Página não mapeada no meio da faixa não é erro: `munmap` só remove o que
+/// existe, como no POSIX.
+pub fn remove_mapping_range(start: u64, length: u64) {
+    let end = start.saturating_add(length);
+    let space = {
+        let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+        let process = &mut scheduler.processes[scheduler.current];
+        let mut write = 0;
+        for read in 0..process.mapping_count {
+            let mapping = process.mappings[read];
+            if !mapping.overlaps(start, end) {
+                process.mappings[write] = mapping;
+                write += 1;
+            }
+        }
+        for index in write..process.mapping_count {
+            process.mappings[index] = Mapping::EMPTY;
+        }
+        process.mapping_count = write;
+        process.address_space
+    };
+    if let Some(space) = space {
+        let mut page = start & !(PAGE_SIZE - 1);
+        while page < end {
+            space.unmap_user_page(page);
+            page = page.saturating_add(PAGE_SIZE);
+        }
+    }
+}
+
+/// Primeiro endereço, a partir de `from`, com `size` bytes que não cruza
+/// nenhuma faixa viva do processo atual.
+///
+/// Devolve `None` se não houver espaço antes de `MMAP_REGION_END`.
+pub fn next_free_mapping_address(from: u64, size: u64) -> Option<u64> {
+    let scheduler = unsafe { &*SCHEDULER.0.get() };
+    let process = &scheduler.processes[scheduler.current];
+    let mut candidate = from;
+    'search: loop {
+        let end = candidate.checked_add(size)?;
+        if end > imagineos_abi::MMAP_REGION_END {
+            return None;
+        }
+        for index in 0..process.mapping_count {
+            let mapping = process.mappings[index];
+            if mapping.overlaps(candidate, end) {
+                candidate = mapping.end().max(candidate + PAGE_SIZE) & !(PAGE_SIZE - 1);
+                continue 'search;
+            }
+        }
+        return Some(candidate);
+    }
 }
 
 pub fn grow_heap(increment: i64) -> Result<u64, i64> {

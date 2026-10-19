@@ -6,6 +6,7 @@
 //!
 //! * `fs` — arquivos, diretórios, descritores (`open/read/write/lseek/fstat`);
 //! * `process` — processos, sinais, pipes e `exec*`/`spawn`/`wait`;
+//! * `thread` — threads, `futex`, `nanosleep`, relógios e `mmap`/`munmap`;
 //! * `display` — framebuffer, superfícies, entrada e console;
 //! * `system` — identidade, tempo, desligamento, instalação e `dmesg`;
 //! * `access` — checagem de permissão de caminhos;
@@ -23,6 +24,7 @@ pub mod fs;
 pub mod input;
 pub mod process;
 pub mod system;
+pub mod thread;
 pub mod trap;
 pub mod user;
 

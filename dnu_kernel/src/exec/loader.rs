@@ -146,6 +146,7 @@ pub fn load(
     }
     Ok(Process {
         pid,
+        tgid: pid,
         active: true,
         stopped: false,
         parent: 0,
@@ -177,6 +178,11 @@ pub fn load(
         signal_restorer: 0,
         signal_frame: None,
         fpu_state,
+        futex_address: 0,
+        futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        wake_deadline: 0,
+        mappings: [crate::exec::process::Mapping::EMPTY; crate::exec::process::MAX_MAPPINGS],
+        mapping_count: 0,
     })
 }
 
