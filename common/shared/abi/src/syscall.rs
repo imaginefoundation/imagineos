@@ -145,3 +145,8 @@ pub const SYS_MMAP: u64 = 69;
 /// alocador. O par `mmap`/`munmap` é o que permite ao `GlobalAlloc` da `std`
 /// crescer **e** liberar memória (o `sbrk` atual só cresce).
 pub const SYS_MUNMAP: u64 = 70;
+/// `set_tls(base) -> 0`: define a base do TLS da thread atual
+/// (`IA32_FS_BASE`). É o equivalente do `arch_prctl(ARCH_SET_FS)` do Linux e
+/// o que a musl chama em `__set_thread_area`; sem ele a thread principal não
+/// tem `errno` por thread nem `pthread_self()`.
+pub const SYS_SET_TLS: u64 = 71;

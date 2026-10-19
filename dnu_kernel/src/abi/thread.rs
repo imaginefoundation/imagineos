@@ -305,6 +305,22 @@ pub fn thread_create(frame: &mut TrapFrame) -> *mut TrapFrame {
     }
 }
 
+/// `set_tls(base) -> 0`: configura a base do TLS (`IA32_FS_BASE`) da thread
+/// atual.
+///
+/// É o equivalente do `arch_prctl(ARCH_SET_FS)` do Linux — a chamada que a
+/// musl faz em `__set_thread_area` antes de qualquer `pthread_self()` ou
+/// `errno`. O valor vai para o `fs_base` da thread e é reprogramado a cada
+/// troca de contexto (`process::restore_fpu_for`/`schedule`).
+///
+/// `base` é usada como ponteiro (`fs:0` precisa ser legível pelo userspace),
+/// mas não validamos o mapeamento: o primeiro acesso do runtime a `%fs:0`
+/// causa o `#PF` normal se o endereço for inválido.
+pub fn set_tls(frame: &mut TrapFrame) -> *mut TrapFrame {
+    process::set_current_tls(frame.rdi);
+    frame.ok(0)
+}
+
 /// `thread_exit(status) -> !`.
 ///
 /// Encerra apenas a thread atual. Se ela era a última do processo, todo o

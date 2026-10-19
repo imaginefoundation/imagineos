@@ -108,3 +108,26 @@ USER_CRT_OBJECTS        := $(BUILD_DIR)/user/crt.o \
                            $(BUILD_DIR)/user/math.o $(BUILD_DIR)/user/mman.o \
                            $(BUILD_DIR)/user/signals.o
 USER_LIBC_OBJECTS       := $(filter-out $(BUILD_DIR)/user/crt.o,$(USER_CRT_OBJECTS))
+
+# ------------------------------------------------------------------------------
+# musl portada para o ImagineOS (third_party/musl-1.2.6)
+# ------------------------------------------------------------------------------
+# A musl é compilada pelo `configure`/`make` dela, com `syscall_arch.h`
+# reescrito para `int 0x80` e `bits/syscall.h.in` com os números do Dreamcore.
+# O build do projeto não roda o `configure` a cada compilação: o diretório
+# `third_party/musl-1.2.6` já vem configurado para este alvo.
+MUSL_DIR         := $(ROOT)/third_party/musl-1.2.6
+MUSL_LIBC        := $(MUSL_DIR)/lib/libc.a
+MUSL_INC         := $(MUSL_DIR)/obj/include
+MUSL_STAMP       := $(BUILD_DIR)/musl.stamp
+
+$(MUSL_STAMP): $(wildcard $(MUSL_DIR)/src/**/*.c) $(wildcard $(MUSL_DIR)/src/**/*.s) \
+               $(wildcard $(MUSL_DIR)/arch/x86_64/*.h)
+	@mkdir -p $(BUILD_DIR)
+	$(MAKE) -C $(MUSL_DIR) -j$$(nproc)
+	@touch $@
+
+musl: $(MUSL_STAMP)
+	@echo "musl pronta: $(MUSL_LIBC)"
+
+.PHONY: musl

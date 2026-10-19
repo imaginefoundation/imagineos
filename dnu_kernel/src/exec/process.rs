@@ -433,6 +433,19 @@ pub fn set_current_wake_deadline(deadline: Option<u64>) {
     scheduler.processes[scheduler.current].wake_deadline = deadline.unwrap_or(0);
 }
 
+/// `set_tls`: grava a base do TLS (`IA32_FS_BASE`) da thread atual.
+///
+/// A escrita no MSR só é possível em ring 0; o valor fica guardado no slot e
+/// passa a valer imediatamente (a thread pode retomar e usar `%fs:0` na mesma
+/// syscall de retorno) e a cada troca de contexto futura.
+pub fn set_current_tls(base: u64) {
+    {
+        let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+        scheduler.processes[scheduler.current].fs_base = base;
+    }
+    write_fs_base(base);
+}
+
 /// Marca a thread atual como bloqueada na palavra de futex `address`.
 pub fn set_current_futex(address: u64, bitset: u64) {
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
