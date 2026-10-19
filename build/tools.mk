@@ -61,7 +61,7 @@ $(DNULINK_BIN): $(ROOT)/common/tools/dnulink.rs $(ABI_RLIB)
 RUST_TARGET    := $(ROOT)/targets/x86_64-unknown-dreamcore.json
 RUST_EXAMPLE   := $(ROOT)/examples/rust-hello
 
-.PHONY: rust-target rust-example rust-std rust-std-patch
+.PHONY: rust-target rust-example rust-std rust-std-patch rust-std-new
 
 # Instala o `dnulink` onde o cargo do usuário o encontra e verifica que o
 # target JSON é aceito pelo rustc.
@@ -88,3 +88,9 @@ rust-std: rust-target
 	cd $(RUST_STD_EXAMPLE) && \
 		RUSTC_BOOTSTRAP=1 rustup run nightly cargo build --release -Zjson-target-spec -Zbuild-std=std && \
 		echo "DEF (std): $(RUST_STD_EXAMPLE)/target/x86_64-unknown-dreamcore/release/rust-std-hello"
+
+# Cria um projeto novo já configurado: `make rust-std-new DIR=~/meu-app`.
+DIR ?=
+rust-std-new: rust-target
+	@if [ -z "$(DIR)" ]; then echo "uso: make rust-std-new DIR=<diretório>"; exit 2; fi
+	$(ROOT)/std-dreamcore/new-project.sh "$(DIR)"

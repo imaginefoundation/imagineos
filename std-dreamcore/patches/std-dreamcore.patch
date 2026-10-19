@@ -115,3 +115,25 @@
          #[cfg(any(
              target_os = "freebsd",
              target_os = "netbsd",
+--- std/src/sys/pal/unix/mod.rs
++++ std/src/sys/pal/unix/mod.rs
+@@ -36,6 +36,19 @@
+     reset_sigpipe(sigpipe);
+ 
+     stack_overflow::init();
++    // ImagineOS: o kernel ja montou o bloco TLS do executavel e gravou
++    // `IA32_FS_BASE`. Informamos a musl do tamanho (`libc.tls_size`), que e o
++    // que `__copy_tls` usa ao criar uma thread nova.
++    #[cfg(target_os = "dreamcore")]
++    {
++        unsafe extern "C" {
++            fn __libc_set_main_tls(size: usize, align: usize);
++        }
++        let info = libc::tls_info();
++        if info.size != 0 {
++            unsafe { __libc_set_main_tls(info.size as usize, info.alignment as usize) };
++        }
++    }
+     #[cfg(not(target_os = "vita"))]
+     crate::sys::args::init(argc, argv);
+ 

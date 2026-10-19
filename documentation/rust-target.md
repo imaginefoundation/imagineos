@@ -141,8 +141,17 @@ A `std` do Rust compila para o alvo via `-Z build-std=std`, usando:
 * o shim `libc` sobre a musl portada;
 * o `dnulink` linkando `libc.a` e um stub de unwinding.
 
-Ver `documentation/std-port.md` para o procedimento completo. Exemplo pronto
-em `examples/rust-std-hello`.
+O passo a passo para compilar um programa **seu** com `std` está em
+[`howto-rust-std.md`](howto-rust-std.md). O funcionamento interno (patch da
+std, shim `libc`, link) está em `std-port.md`. Exemplo pronto em
+`examples/rust-std-hello`.
+
+Atalho para criar um projeto já configurado:
+
+```sh
+std-dreamcore/new-project.sh ~/meu-app
+cd ~/meu-app && ./build.sh
+```
 
 ## Limitações
 

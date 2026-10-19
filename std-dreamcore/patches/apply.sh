@@ -50,4 +50,21 @@ open(path, "w").write(text)
 PY
 fi
 (cd "$SRC" && cargo +nightly generate-lockfile --offline >/dev/null 2>&1 || true)
+
+# O `build-std` mantém o `libc` compilado em `target/<alvo>/release/build/libc`,
+# dentro do diretório de build de cada projeto. Se o Cargo.lock ou o shim mudou,
+# esse artefato fica **obsoleto** e a std compila contra a versão antiga do
+# shim — sintoma típico: `cannot find function \`xyz\` in crate \`libc\``, mesmo
+# com a função presente no fonte.
+#
+# Não é possível limpar o cache de todos os projetos daqui, então avisamos e
+# deixamos o comando pronto. `build.sh` e o `make rust-std` já fazem a limpeza.
+built=$(find "$SRC/../../../../.." -maxdepth 6 -type d -path "*/build/libc-*" 2>/dev/null | head -5 || true)
+if [ -n "$built" ]; then
+    echo
+    echo "atenção: existem artefatos de \`libc\` em cache nos projetos abaixo."
+    echo "Se a compilação falhar com simbolos ausentes no crate libc, apague o target."
+    echo "$built" | sed 's/^/  /'
+fi
+
 echo "camada dreamcore aplicada em: $SRC/std"
