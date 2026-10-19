@@ -9,3 +9,4 @@ third_party/*
 /ramfs
 toolchain/
 /.testing
+/examples

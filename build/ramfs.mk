@@ -77,6 +77,12 @@ $(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
 	for utility in $(USER_C_UTILITIES); do \
 		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
 	done
+	# Programas Rust do alvo x86_64-unknown-dreamcore. São opcionais: se a
+	# ferramenta não foi construída, a imagem segue sem eles.
+	for program in rust-hello rust-std-hello; do \
+		binary=$(ROOT)/examples/$$program/target/x86_64-unknown-dreamcore/release/$$program; \
+		if [ -f "$$binary" ]; then cp "$$binary" $(BUILD_DIR)/ramfs/bin/$$program; fi; \
+	done
 	# Stack Liminal: display server + window manager/compositor.
 	cp $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/ramfs/bin/liminal-server
 	cp $(BUILD_DIR)/user/bin/liminal-client $(BUILD_DIR)/ramfs/bin/liminal-client

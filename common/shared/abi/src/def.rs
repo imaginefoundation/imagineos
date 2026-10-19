@@ -177,6 +177,15 @@ impl DefCapability {
     pub const INSTALL: u64 = 1 << 7;
 }
 
+/// Bit de `DefSegment::reserved` que marca o segmento de **TLS**.
+///
+/// O DEF não tem um tipo de segmento próprio: o loader carrega tudo como
+/// páginas. O bloco thread-local, porém, não é uma página comum — o kernel
+/// precisa reconhecê-lo para montar o TCB e gravar `fs_base`. Usar o campo
+/// `reserved` (previsto para isso) mantém o formato compatível: binários
+/// antigos têm `reserved == 0` e continuam válidos.
+pub const DEF_SEGMENT_TLS: u32 = 1 << 0;
+
 /// Um segmento carregável, como fica descrito na tabela do DEF.
 ///
 /// Esta é a visão *em memória* de uma entrada da tabela; o loader do kernel
@@ -207,6 +216,11 @@ impl DefSegment {
 
     pub const fn is_writable(&self) -> bool {
         self.permissions & DefPermissions::WRITE != 0
+    }
+
+    /// Este segmento é o bloco `PT_TLS` (`.tdata` + `.tbss`).
+    pub const fn is_tls(&self) -> bool {
+        self.reserved & DEF_SEGMENT_TLS != 0
     }
 }
 

@@ -200,6 +200,13 @@ pub struct Process {
     /// Instante (µs desde o boot) em que uma espera temporizada expira. `0` =
     /// sem prazo. Usado por `nanosleep` e `futex` com timeout.
     pub(crate) wake_deadline: u64,
+    /// Tamanho do bloco TLS (`p_memsz` do `PT_TLS`) do processo.
+    ///
+    /// É o mesmo para todas as threads do grupo: cada uma recebe uma **cópia**
+    /// própria do bloco, mas todas têm o mesmo tamanho. `0` = sem TLS.
+    pub(crate) tls_size: u64,
+    /// Alinhamento do bloco TLS (o `p_align` do segmento, mínimo 16).
+    pub(crate) tls_alignment: u64,
     /// Valor de `IA32_FS_BASE` desta thread (TLS no espaço de usuário).
     ///
     /// Threads de um mesmo processo compartilham o espaço de endereço, mas cada
@@ -253,6 +260,8 @@ impl Process {
         signal_restorer: 0,
         signal_frame: None,
         fpu_state: FpuState::EMPTY,
+        tls_size: 0,
+        tls_alignment: 16,
         // O kernel roda em ring 3 com FS livre: o PID 1 nasce sem TLS.
         fs_base: 0,
         futex_address: 0,
@@ -444,6 +453,16 @@ pub fn set_current_tls(base: u64) {
         scheduler.processes[scheduler.current].fs_base = base;
     }
     write_fs_base(base);
+}
+
+/// `(fs_base, tls_size, tls_alignment)` da thread atual.
+///
+/// O tamanho é do **grupo** (todas as threads têm bloco do mesmo tamanho);
+/// `fs_base` é o ponteiro desta thread.
+pub fn current_tls_info() -> (u64, u64, u64) {
+    let scheduler = unsafe { &*SCHEDULER.0.get() };
+    let process = scheduler.processes[scheduler.current];
+    (process.fs_base, process.tls_size, process.tls_alignment)
 }
 
 /// Marca a thread atual como bloqueada na palavra de futex `address`.
@@ -1492,6 +1511,10 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
         fpu_state,
         // O filho herda o TLS do pai no momento do `fork`; ele pode trocá-lo
         // depois com `set_thread_area` no runtime.
+        // `fork`: o filho herda o bloco TLS do pai (o `clone_user` copia as
+        // páginas, então o ponteiro continua válido no espaço novo).
+        tls_size: parent.tls_size,
+        tls_alignment: parent.tls_alignment,
         fs_base: read_fs_base(),
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
@@ -2017,6 +2040,10 @@ pub fn create_thread(
         fpu_state,
         // `ThreadCreate.tls == 0` significa "não mexe": a thread herda o TLS
         // do criador; caso contrário recebe o bloco TLS do pedido.
+        // A thread compartilha o tamanho do bloco com o grupo; o ponteiro vem
+        // do `pthread_create` (via `__copy_tls`, que já montou a cópia).
+        tls_size: parent.tls_size,
+        tls_alignment: parent.tls_alignment,
         fs_base: if request.tls != 0 { request.tls } else { read_fs_base() },
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,

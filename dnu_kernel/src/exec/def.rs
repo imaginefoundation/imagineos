@@ -58,6 +58,12 @@ pub struct Segment {
     pub file_size: usize,
     /// Permissões de página (R/W/X). Ver [`DefPermissions`].
     pub permissions: u32,
+    /// Este segmento é o bloco TLS (`.tdata` + `.tbss`).
+    ///
+    /// Não é carregado como página comum: `virtual_address` aqui é o endereço
+    /// **dentro da imagem TLS** (offset 0 = início do bloco), e o loader monta
+    /// um bloco próprio no topo da pilha, com o TCB logo depois.
+    pub is_tls: bool,
 }
 
 impl Segment {
@@ -166,6 +172,7 @@ impl<'a> Def<'a> {
         let memory_size = read_u64(self.bytes, base + 16)?;
         let virtual_address = read_u64(self.bytes, base + 24)?;
         let permissions = read_u32(self.bytes, base + 32)?;
+        let reserved = read_u32(self.bytes, base + 36)?;
         if memory_size == 0 {
             return Ok(None);
         }
@@ -199,6 +206,7 @@ impl<'a> Def<'a> {
             file_offset,
             file_size,
             permissions,
+            is_tls: reserved & imagineos_abi::def::DEF_SEGMENT_TLS != 0,
         }))
     }
 

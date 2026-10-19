@@ -43,6 +43,46 @@ struct LoadedSegment {
     file_size: usize,
 }
 
+/// Um segmento de TLS lido do DEF (`reserved & DEF_SEGMENT_TLS`).
+///
+/// `image_offset` é o endereço **na imagem TLS**, não um VA: 0 é o início do
+/// bloco e `image_offset + sz` o fim dos dados inicializados. O loader copia
+/// `file_size` bytes do arquivo para `bloco + image_offset` e zera o resto.
+struct TlsSegment {
+    image_offset: u64,
+    file_offset: usize,
+    file_size: usize,
+    memory_size: u64,
+    /// `p_align` do `PT_TLS` (mínimo 16 — o codegen do Rust alinha o bloco).
+    alignment: u64,
+}
+
+/// Layout do bloco TLS (modelo *variant II*, o mesmo da musl no x86_64).
+///
+/// O codegen do Rust no x86_64 acessa variáveis TLS com offsets **negativos**
+/// a partir de `%fs` (confirmado na desmontagem do exemplo com `std`:
+/// `%fs:0x0` seguido de `-0xfe8(%rax)`). O layout, idêntico ao da musl:
+///
+/// ```text
+///   fs_base + 0x00 ─► [ tcb->self ]  (o código lê %fs:0x0)
+///   fs_base + 0x08 ─► [ dtv ]
+///   fs_base ────────► fim do bloco TLS == bloco + memsz
+///   fs_base - memsz ─► início do bloco (offset 0 da imagem TLS)
+/// ```
+///
+/// Ou seja `fs_base = bloco + memsz`: um `memcpy` da imagem para
+/// `fs_base - memsz` reproduz exatamente os offsets que o código espera.
+/// (Conferido com o binário: a variável em `bloco + 0x38` é acessada como
+/// `-0xfe8(%fs_base)` quando `memsz = 0x1020`.)
+///
+/// O TCB precisa ter espaço para o `struct pthread` da musl (0x900) porque
+/// `pthread_self()` devolve `fs_base` diretamente; 4 KiB deixa folga para o
+/// restante do bloco de controle que a musl usa ao criar threads.
+const TCB_SIZE: u64 = 0x1000;
+
+/// Deslocamento do self-pointer dentro do TCB (`%fs:0x0`).
+const TCB_SELF_OFFSET: u64 = 0;
+
 /// Uma imagem executável já validada (sempre DEF).
 type Image<'a> = Def<'a>;
 
@@ -55,6 +95,28 @@ fn stack_size(image: &Image<'_>) -> u64 {
         0 => USER_STACK_SIZE,
         requested => requested.clamp(MIN_USER_STACK_SIZE, MAX_USER_STACK_SIZE),
     }
+}
+
+/// Procura o segmento marcado como TLS (`reserved & DEF_SEGMENT_TLS`).
+///
+/// Devolve `None` para binários sem TLS (`no_std` simples), que continuam
+/// funcionando com `fs_base = 0` — só não podem usar `thread_local!`.
+fn find_tls_segment(image: &Image<'_>) -> Result<Option<TlsSegment>, LoadError> {
+    for index in 0..image.segment_count() {
+        let Some(segment) = image.segment(index).map_err(LoadError::InvalidDef)? else {
+            continue;
+        };
+        if segment.is_tls {
+            return Ok(Some(TlsSegment {
+                image_offset: segment.virtual_address,
+                file_offset: segment.file_offset,
+                file_size: segment.file_size,
+                memory_size: segment.memory_size,
+                alignment: 16,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn loaded_segment(image: &Image<'_>, index: usize) -> Result<Option<LoadedSegment>, LoadError> {
@@ -116,8 +178,24 @@ pub fn load(
             .map_err(|_| LoadError::OutOfMemory)?;
         page += PAGE_SIZE;
     }
+    let tls_segment = find_tls_segment(&image)?;
     let (user_stack, user_argv, user_envp) =
         prepare_user_stack(&address_space, arguments, environment)?;
+
+    // O bloco TLS fica **abaixo** do `rsp` inicial (que já aponta para a pilha
+    // de argumentos). Colocá-lo em `USER_STACK_TOP` sobreporia `argv`/`envp`.
+    // Layout final do topo da pilha:
+    //
+    //   USER_STACK_TOP ─► strings de argv/envp
+    //        rsp ─────► ponteiros de argv, envp, NULLs
+    //        ...  ─────► [ bloco TLS ][ TCB ]   (fs_base entre eles)
+    //
+    // O espaço é virtual e a pilha cresce para baixo, então desperdiçar
+    // `memsz + TCB_SIZE` de *gap* não custa RAM — só espaço de endereço.
+    let fs_base = match &tls_segment {
+        Some(tls) => build_tls(&image, &address_space, tls, user_stack)?,
+        None => 0,
+    };
 
     let entry = image.entry;
     if address_space.translate(entry).is_none() {
@@ -178,8 +256,10 @@ pub fn load(
         signal_restorer: 0,
         signal_frame: None,
         fpu_state,
-        // Processo recém-carregado: FS sem TLS até o runtime configurá-lo.
-        fs_base: 0,
+        tls_size: tls_segment.as_ref().map_or(0, |tls| tls.memory_size),
+        tls_alignment: tls_segment.as_ref().map_or(16, |tls| tls.alignment),
+        // Bloco TLS montado acima (0 quando o DEF não tem `PT_TLS`).
+        fs_base,
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
         futex_sequence: 0,
@@ -228,7 +308,87 @@ fn segment_file(segment: &LoadedSegment) -> def::Segment {
         file_offset: segment.file_offset,
         file_size: segment.file_size,
         permissions: 0,
+        is_tls: false,
     }
+}
+
+/// Monta o bloco TLS do processo no topo da pilha do usuário.
+///
+/// Devolve o valor para `IA32_FS_BASE` ou `0` quando o binário não tem TLS.
+///
+/// O bloco fica **abaixo** do `stack_pointer` (o `rsp` inicial, que já aponta
+/// para os ponteiros de `argv`/`envp`), ocupando `memsz + TCB_SIZE` bytes.
+/// Como o layout é *variant II*, `fs_base = topo do bloco` e as variáveis TLS
+/// ficam em offsets negativos — exatamente o que o codegen do Rust e a musl
+/// esperam.
+///
+/// `tls` é o segmento `PT_TLS` do DEF: `file_size` bytes inicializados a partir
+/// de `image_offset` na imagem, e o resto zerado (`.tbss`).
+fn build_tls(
+    image: &Image<'_>,
+    address_space: &AddressSpace,
+    tls: &TlsSegment,
+    stack_pointer: u64,
+) -> Result<u64, LoadError> {
+    let memsz = tls.memory_size;
+    if memsz == 0 {
+        return Ok(0);
+    }
+    // `[ bloco TLS (memsz) ][ TCB (TCB_SIZE) ]`; `fs_base` cai entre os dois.
+    let total = memsz
+        .checked_add(TCB_SIZE)
+        .ok_or(LoadError::InvalidMapping)?;
+    let block = stack_pointer
+        .checked_sub(total)
+        .ok_or(LoadError::InvalidMapping)?;
+
+    // Mapeia as páginas do bloco (a pilha já ocupava até `stack_pointer`; o
+    // bloco é novo e pode cair em páginas ainda não mapeadas).
+    let start = block & !(PAGE_SIZE - 1);
+    let end = stack_pointer;
+    let mut page = start;
+    while page < end {
+        match address_space.map_user_page(page) {
+            Ok(_) | Err(MapError::AlreadyMapped) => {}
+            Err(_) => return Err(LoadError::OutOfMemory),
+        }
+        page += PAGE_SIZE;
+    }
+
+    // Zera o bloco todo (cobre `.tbss` e o TCB).
+    zero_user_range(address_space, block, total)?;
+
+    // Copia os dados inicializados da imagem TLS.
+    if tls.file_size != 0 {
+        let bytes = image
+            .file_bytes(def::Segment {
+                virtual_address: tls.image_offset,
+                memory_size: memsz,
+                file_offset: tls.file_offset,
+                file_size: tls.file_size,
+                permissions: 0,
+                is_tls: true,
+            })
+            .ok_or(LoadError::InvalidMapping)?;
+        let destination = block
+            .checked_add(tls.image_offset)
+            .ok_or(LoadError::InvalidMapping)?;
+        copy_to_space_result(address_space, destination, bytes)?;
+    }
+
+    // `fs_base` aponta para o fim do bloco (variant II).
+    let fs_base = block
+        .checked_add(memsz)
+        .ok_or(LoadError::InvalidMapping)?;
+
+    // `%fs:0x0` é o *self-pointer* do TCB: o codegen do Rust carrega dele e a
+    // musl devolve esse endereço em `pthread_self()`. Deve apontar para si.
+    let self_pointer = fs_base
+        .checked_add(TCB_SELF_OFFSET)
+        .ok_or(LoadError::InvalidMapping)?;
+    copy_to_space_result(address_space, self_pointer, &self_pointer.to_le_bytes())?;
+
+    Ok(fs_base)
 }
 
 fn initial_frame(

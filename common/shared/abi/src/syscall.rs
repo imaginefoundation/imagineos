@@ -150,3 +150,7 @@ pub const SYS_MUNMAP: u64 = 70;
 /// o que a musl chama em `__set_thread_area`; sem ele a thread principal não
 /// tem `errno` por thread nem `pthread_self()`.
 pub const SYS_SET_TLS: u64 = 71;
+/// `tls_info(&TlsInfo) -> 0`: descreve o bloco TLS que o kernel montou para o
+/// processo (`fs_base` e `memory_size`). A musl precisa disto para calcular
+/// quanta memória cada thread nova consome; um `no_std` simples pode ignorar.
+pub const SYS_TLS_INFO: u64 = 72;

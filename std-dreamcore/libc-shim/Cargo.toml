@@ -1,0 +1,20 @@
+[package]
+name = "libc"
+version = "0.2.189"
+edition = "2021"
+description = "Shim da crate libc para o ImagineOS: delega à musl portada (int 0x80)."
+
+[lib]
+name = "libc"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = []
+rustc-dep-of-std = ["align", "core"]
+align = []
+
+[dependencies]
+core = { version = "1.0", optional = true, package = "rustc-std-workspace-core" }
+
+[workspace]

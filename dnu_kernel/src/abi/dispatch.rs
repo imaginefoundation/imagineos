@@ -15,8 +15,8 @@ use imagineos_abi::{
     SYS_SHUTDOWN_REQUEST, SYS_SIGACTION, SYS_SIGRETURN, SYS_SPAWN, SYS_STAT, SYS_SURFACE_CREATE,
     SYS_SURFACE_DESTROY, SYS_SURFACE_FLUSH, SYS_SURFACE_MOVE, SYS_SURFACE_POLL, SYS_SURFACE_PRESENT,
     SYS_SURFACE_SEND_EVENT, SYS_SURFACE_SNAPSHOT, SYS_SYSTEM_INFO, SYS_SET_TLS,
-    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TOUCH, SYS_WAITPID, SYS_WRITE, SYS_WRITE_FD,
-    SYS_WRITE_FILE, SYS_YIELD,
+    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TLS_INFO, SYS_TOUCH, SYS_WAITPID, SYS_WRITE,
+    SYS_WRITE_FD, SYS_WRITE_FILE, SYS_YIELD,
 };
 
 // `crate::process` é o escalonador (reexportado por `exec`); o módulo
@@ -87,6 +87,7 @@ fn dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
         SYS_MMAP => thread_calls::mmap(frame),
         SYS_MUNMAP => thread_calls::munmap(frame),
         SYS_SET_TLS => thread_calls::set_tls(frame),
+        SYS_TLS_INFO => thread_calls::tls_info(frame),
 
         // --- descritores, pipes e arquivos --------------------------------
         SYS_OPEN => fs::open(frame),

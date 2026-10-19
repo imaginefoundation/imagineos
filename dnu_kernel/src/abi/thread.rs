@@ -321,6 +321,25 @@ pub fn set_tls(frame: &mut TrapFrame) -> *mut TrapFrame {
     frame.ok(0)
 }
 
+/// `tls_info(&TlsInfo) -> 0`: descreve o bloco TLS montado pelo kernel.
+///
+/// A musl usa `size` para calcular quanto espaço cada thread precisa ao ser
+/// criada (`__copy_tls`); `fs_base` é informativo. Binários sem TLS devolvem
+/// `size == 0` e a musl funciona sem `pthread_create` de TLS.
+pub fn tls_info(frame: &mut TrapFrame) -> *mut TrapFrame {
+    let (fs_base, size, alignment) = process::current_tls_info();
+    let info = imagineos_abi::TlsInfo {
+        fs_base,
+        size,
+        alignment,
+    };
+    if copy_struct_to_user(frame.rdi, &info) {
+        frame.ok(0)
+    } else {
+        frame.fail(EFAULT)
+    }
+}
+
 /// `thread_exit(status) -> !`.
 ///
 /// Encerra apenas a thread atual. Se ela era a última do processo, todo o

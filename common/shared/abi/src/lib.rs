@@ -253,6 +253,19 @@ pub const PROT_EXEC: u64 = 1 << 2;
 /// Tamanho de uma página de usuário, compartilhado por `mmap`/`munmap`.
 pub const PAGE_SIZE: u64 = 4096;
 
+/// Descrição do bloco TLS montado pelo kernel (`SYS_TLS_INFO`).
+///
+/// O kernel monta o bloco a partir do segmento `PT_TLS` do DEF e grava
+/// `fs_base` (modelo *variant II*: as variáveis ficam em offsets negativos).
+/// `size` é o `p_memsz` do segmento; `0` quando o binário não tem TLS.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TlsInfo {
+    pub fs_base: u64,
+    pub size: u64,
+    pub alignment: u64,
+}
+
 /// Maior `length` aceito por uma única `mmap`.
 ///
 /// Sem este limite uma chamada com `length = u64::MAX` derrubaria o kernel ao

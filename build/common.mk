@@ -53,6 +53,7 @@ DISK_IMAGE     ?= $(BUILD_DIR)/imagineos-disk.img
 INSTALL_TARGET := $(BUILD_DIR)/installer-target.img
 DFS_IMAGE_BIN  := $(BUILD_DIR)/dfs-image
 DNU_PACK_BIN   := $(BUILD_DIR)/dnu-pack
+DNULINK_BIN    := $(BUILD_DIR)/dnulink
 
 # Fontes de terceiros e recursos
 LIMINE_DIR      := $(ROOT)/third_party/limine

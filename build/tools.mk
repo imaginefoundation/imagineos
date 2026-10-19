@@ -23,11 +23,16 @@ ABI_RLIB      := $(ABI_TARGET_DIR)/$(HOST_TRIPLE)/release/libimagineos_abi.rlib
 # O dnu-pack converte o ELF que o toolchain emite para o contêiner DEF que o
 # kernel carrega (é o único formato de userspace aceito). O build de userland
 # depende dele, então esta etapa precisa estar pronta antes.
-.PHONY: tools dnu-pack
+.PHONY: tools dnu-pack dnulink
 
-tools: $(DFS_IMAGE_BIN) $(DNU_PACK_BIN)
+tools: $(DFS_IMAGE_BIN) $(DNU_PACK_BIN) $(DNULINK_BIN)
 
 dnu-pack: $(DNU_PACK_BIN)
+
+# O dnulink é o `linker` do target x86_64-unknown-dreamcore: recebe o ELF do
+# rust-lld e publica DEF. `make rust-target` instala este binário em
+# `~/.cargo/dreamcore/` para o `cargo build` do usuário encontrá-lo.
+dnulink: $(DNULINK_BIN)
 
 $(DFS_IMAGE_BIN): $(ROOT)/common/tools/dfs-image.rs $(ROOT)/dnu_kernel/src/fs/dfs/dfs.rs \
                   $(ROOT)/dnu_kernel/src/fs/gpt.rs $(ROOT)/dnu_kernel/src/drivers/block.rs
@@ -42,3 +47,44 @@ $(DNU_PACK_BIN): $(ROOT)/common/tools/dnu-pack.rs $(ABI_RLIB)
 	@mkdir -p $(BUILD_DIR)
 	$(RUSTC) --edition 2024 -C panic=abort \
 		--extern imagineos_abi=$(ABI_RLIB) $< -o $@
+
+$(DNULINK_BIN): $(ROOT)/common/tools/dnulink.rs $(ABI_RLIB)
+	@mkdir -p $(BUILD_DIR)
+	$(RUSTC) --edition 2024 -C panic=abort \
+		--extern imagineos_abi=$(ABI_RLIB) $< -o $@
+
+# ------------------------------------------------------------------------------
+# Alvo Rust x86_64-unknown-dreamcore
+# ------------------------------------------------------------------------------
+# Constrói o programa de exemplo do alvo. Precisa de `rust-src` no nightly
+# (`-Z build-std` recompila `core`/`alloc` para o alvo).
+RUST_TARGET    := $(ROOT)/targets/x86_64-unknown-dreamcore.json
+RUST_EXAMPLE   := $(ROOT)/examples/rust-hello
+
+.PHONY: rust-target rust-example rust-std rust-std-patch
+
+# Instala o `dnulink` onde o cargo do usuário o encontra e verifica que o
+# target JSON é aceito pelo rustc.
+rust-target: $(DNULINK_BIN) $(RUST_TARGET)
+	@mkdir -p $(HOME)/.cargo/dreamcore
+	@cp $(DNULINK_BIN) $(HOME)/.cargo/dreamcore/dnulink
+	@rustc +nightly --target $(RUST_TARGET) --print target-spec-json \
+		-Z unstable-options >/dev/null && echo "alvo x86_64-unknown-dreamcore ok"
+
+rust-example: rust-target
+	cd $(RUST_EXAMPLE) && \
+		RUSTC_BOOTSTRAP=1 rustup run nightly cargo build --release -Zjson-target-spec && \
+		echo "DEF: $(RUST_EXAMPLE)/target/x86_64-unknown-dreamcore/release/rust-hello"
+
+# Aplica a camada `dreamcore` na std do toolchain (116 linhas de patch +
+# `os/unix/dreamcore`). Use --revert no script para restaurar.
+RUST_STD_EXAMPLE := $(ROOT)/examples/rust-std-hello
+
+rust-std-patch:
+	$(ROOT)/std-dreamcore/patches/apply.sh
+
+rust-std: rust-target
+	$(ROOT)/std-dreamcore/patches/apply.sh
+	cd $(RUST_STD_EXAMPLE) && \
+		RUSTC_BOOTSTRAP=1 rustup run nightly cargo build --release -Zjson-target-spec -Zbuild-std=std && \
+		echo "DEF (std): $(RUST_STD_EXAMPLE)/target/x86_64-unknown-dreamcore/release/rust-std-hello"
