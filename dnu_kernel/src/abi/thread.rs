@@ -252,7 +252,13 @@ pub fn futex(frame: &mut TrapFrame) -> *mut TrapFrame {
             } else {
                 imagineos_abi::FUTEX_BITSET_MATCH_ANY
             };
-            let woken = process::wake_futex(address, value as usize, bitset);
+            // No Linux, `FUTEX_WAKE` com `val == 0` acorda **todas** as threads
+            // da palavra; `usize::MAX` traduz isso para o escalonador.
+            let count = match value as usize {
+                0 => usize::MAX,
+                count => count,
+            };
+            let woken = process::wake_futex(address, count, bitset);
             frame.ok(woken as u64)
         }
         _ => frame.fail(ENOSYS),
@@ -342,12 +348,16 @@ pub fn mmap(frame: &mut TrapFrame) -> *mut TrapFrame {
         return frame.fail(ENOSYS);
     }
     if protection & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0
-        || protection & (PROT_READ | PROT_WRITE) == 0
+        || protection & (PROT_READ | PROT_WRITE | PROT_EXEC) == 0
     {
         // `PROT_NONE` e bits desconhecidos não são suportados pelo `AddressSpace`
         // (não há como gravar uma PTE "não presente mas válida").
         return frame.fail(EINVAL);
     }
+    // Página só de execução não existe neste hardware (NX não é configurado):
+    // `PROT_EXEC` sem leitura continua legível. Fora isso, a única distinção que
+    // importa é gravável ou não.
+    let _ = PROT_EXEC;
     let Some(size) = page_rounded(length) else {
         return frame.fail(EINVAL);
     };
@@ -372,17 +382,20 @@ pub fn mmap(frame: &mut TrapFrame) -> *mut TrapFrame {
         }
     };
 
+    // `MAP_FIXED` substitui tudo o que existir na faixa. A remoção vem antes
+    // do registro da nova VMA: ao contrário, `add_mapping` recusaria a faixa
+    // por ela ainda constar na tabela. As páginas já populadas também caem, o
+    // que é a semântica de `MAP_FIXED` (a faixa é descartada e recriada).
+    if fixed {
+        process::remove_mapping_range(address, size);
+    }
+
     if !process::add_mapping(Mapping {
         start: address,
         length: size,
+        writable: protection & PROT_WRITE != 0,
     }) {
         return frame.fail(ENOMEM);
-    }
-    if fixed {
-        // `MAP_FIXED` precisa descartar o que já existe na faixa; como o
-        // alocador nunca sobrepõe faixas vivas, a única colisão possível é com
-        // uma alocação anterior que o chamador está reciclando explicitamente.
-        process::forget_mappings_in(address, size);
     }
     frame.ok(address)
 }

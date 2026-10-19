@@ -25,6 +25,28 @@ pub enum MapError {
     PartiallyMapped,
 }
 
+/// Permissões de uma página de usuário (bit a bit).
+///
+/// Espelha `PROT_*` da ABI, mas vive aqui para o módulo de paginação não
+/// depender de `crate::abi`: o `mmap` traduz `PROT_WRITE` para cá.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageFlags(u8);
+
+impl PageFlags {
+    pub const READ_WRITE: Self = Self(1);
+    /// Página de código reservada por `mmap(PROT_READ|PROT_EXEC)`.
+    pub const READ_EXEC: Self = Self(2);
+
+    pub const fn is_writable(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// Bits a somar na PTE (o bit `PRESENT`/`USER` fica a cargo do mapeador).
+    const fn entry_bits(self) -> u64 {
+        if self.is_writable() { ENTRY_WRITABLE } else { 0 }
+    }
+}
+
 impl AddressSpace {
     pub fn new_user() -> Option<Self> {
         let current_root = read_cr3() & ADDRESS_MASK;
@@ -40,7 +62,24 @@ impl AddressSpace {
         })
     }
 
+    /// Mapeia uma página de usuário, legível e gravável.
+    ///
+    /// Mantido como atalho para o loader e para `try_map_range`; proteções
+    /// específicas (`mmap`) usam [`AddressSpace::map_user_page_with`].
     pub fn map_user_page(&self, virtual_address: u64) -> Result<*mut u8, MapError> {
+        self.map_user_page_with(virtual_address, PageFlags::READ_WRITE)
+    }
+
+    /// Mapeia uma página de usuário com as permissões pedidas.
+    ///
+    /// Se a PTE já existe o mapeamento é **atualizado** (as permissões passam a
+    /// valer, o frame é preservado). É o que permite implementar
+    /// demais mudanças de proteção sem realocar memória.
+    pub fn map_user_page_with(
+        &self,
+        virtual_address: u64,
+        flags: PageFlags,
+    ) -> Result<*mut u8, MapError> {
         if !(USER_MIN..USER_MAX).contains(&virtual_address) {
             return Err(MapError::InvalidAddress);
         }
@@ -70,13 +109,17 @@ impl AddressSpace {
         let table = table_pointer(table_physical).ok_or(MapError::OutOfMemory)?;
         let entry = unsafe { &mut *table.add(indices[3]) };
         if *entry & ENTRY_PRESENT != 0 {
-            return Err(MapError::AlreadyMapped);
+            // Já mapeada: só ajusta a proteção e mantém o frame. Sem isto não
+            // haveria como implementar `mprotect`/`MAP_FIXED` idempotente.
+            *entry = (*entry & !ENTRY_WRITABLE) | flags.entry_bits();
+            return Ok(memory::phys_to_virt(*entry & ADDRESS_MASK)
+                .unwrap_or(core::ptr::null_mut()));
         }
         let frame = memory::allocate_frame().ok_or(MapError::OutOfMemory)?;
         unsafe {
             ptr::write_bytes(frame.virtual_address, 0, PAGE_SIZE as usize);
         }
-        *entry = frame.physical_address | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER;
+        *entry = frame.physical_address | ENTRY_PRESENT | ENTRY_USER | flags.entry_bits();
         Ok(frame.virtual_address)
     }
 
@@ -381,6 +424,61 @@ pub fn map_framebuffer_range(
     /// de um endereço específico dentro dela.
     pub fn page_is_present(&self, page: u64) -> bool {
         self.translate(page & !(PAGE_SIZE - 1)).is_some()
+    }
+
+    /// `true` se a PTE da página existe e está gravável.
+    ///
+    /// O `#PF` de escrita precisa disto para distinguir "página de `mmap`
+    /// ainda não populada" (erro de escrita, PTE ausente → popular) de uma
+    /// escrita legítima em página somente-leitura (violação → `SIGSEGV`).
+    pub fn page_is_writable(&self, page: u64) -> bool {
+        let Some(entry) = self.page_entry(page & !(PAGE_SIZE - 1)) else {
+            return false;
+        };
+        unsafe { (*entry & ENTRY_PRESENT != 0) && (*entry & ENTRY_WRITABLE != 0) }
+    }
+
+    /// Marca uma página como não presente sem devolver o frame ao alocador.
+    ///
+    /// Usado por `munmap` de faixas parcialmente presentes: o frame é liberado
+    /// pelo chamador apenas quando ele tem certeza de que a página pertence à
+    /// faixa (ver [`AddressSpace::flush_range`]).
+    pub fn unmap_page_quietly(&self, page: u64) -> Option<u64> {
+        let entry = self.page_entry(page & !(PAGE_SIZE - 1))?;
+        let physical = unsafe { *entry & ADDRESS_MASK };
+        unsafe {
+            if *entry & ENTRY_PRESENT == 0 {
+                return None;
+            }
+            *entry = 0;
+            let address = page & !(PAGE_SIZE - 1);
+            core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+        }
+        Some(physical)
+    }
+
+    /// Endereço da PTE de uma página, ou `None` se alguma tabela não existe.
+    fn page_entry(&self, page_address: u64) -> Option<*mut u64> {
+        if !(USER_MIN..USER_MAX).contains(&page_address) {
+            return None;
+        }
+        let indices = [
+            ((page_address >> 39) & 0x1ff) as usize,
+            ((page_address >> 30) & 0x1ff) as usize,
+            ((page_address >> 21) & 0x1ff) as usize,
+            ((page_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut table_physical = self.root_physical;
+        for index in indices.iter().take(3) {
+            let table = table_pointer(table_physical)?;
+            let entry = unsafe { *table.add(*index) };
+            if entry & ENTRY_PRESENT == 0 {
+                return None;
+            }
+            table_physical = entry & ADDRESS_MASK;
+        }
+        let table = table_pointer(table_physical)?;
+        Some(unsafe { table.add(indices[3]) })
     }
 
     pub fn translate(&self, virtual_address: u64) -> Option<*mut u8> {

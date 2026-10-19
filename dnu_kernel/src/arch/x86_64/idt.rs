@@ -235,6 +235,17 @@ extern "C" fn dreamcore_exception_handler(
     cr2: u64,
 ) -> ! {
     if cs & 3 == 3 {
+        // `#PF` de escrita em uma VMA de `mmap` que ainda não foi populada: em
+        // vez de matar o processo, instala a página zerada e retoma a instrução
+        // que falhou. `bits 0..2` do código de erro são `P` (presente), `W/R`
+        // (escrita) e `U/S` (usuário) — só tratamos escrita (bit 1).
+        if vector == 14 && error & 0b010 != 0 && crate::process::handle_mmap_fault(cr2) {
+            // Retoma a instrução que faltou (`iretq` para o mesmo `rip`).
+            let frame = crate::process::current_trap_frame();
+            unsafe {
+                dreamcore_resume_trap_frame(frame);
+            }
+        }
         crate::serial_log_timestamp();
         serial_write(b"User process fault; terminating PID ");
         serial_hex(crate::process::current_pid() as u64);

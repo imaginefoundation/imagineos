@@ -178,8 +178,11 @@ pub fn load(
         signal_restorer: 0,
         signal_frame: None,
         fpu_state,
+        // Processo recém-carregado: FS sem TLS até o runtime configurá-lo.
+        fs_base: 0,
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        futex_sequence: 0,
         wake_deadline: 0,
         mappings: [crate::exec::process::Mapping::EMPTY; crate::exec::process::MAX_MAPPINGS],
         mapping_count: 0,

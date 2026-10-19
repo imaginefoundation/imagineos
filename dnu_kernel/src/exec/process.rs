@@ -35,16 +35,24 @@ pub(crate) const MAX_PROCESSES: usize = imagineos_abi::MAX_PROCESSES;
 pub const MAX_MAPPINGS: usize = 32;
 
 /// Uma região anônima de `mmap`, já alinhada à página.
+///
+/// `writable == false` é uma VMA reservada apenas para leitura/execução: as
+/// páginas são instaladas no primeiro `#PF` de **escrita** (o primeiro acesso de
+/// leitura também popula, mas sem permissão de escrita). Manter a intenção aqui,
+/// e não na PTE, é o que permite distinguir "página ainda não tocada" de
+/// "página tocada e protegida".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mapping {
     pub start: u64,
     pub length: u64,
+    pub writable: bool,
 }
 
 impl Mapping {
     pub const EMPTY: Self = Self {
         start: 0,
         length: 0,
+        writable: false,
     };
 
     pub const fn end(self) -> u64 {
@@ -192,6 +200,19 @@ pub struct Process {
     /// Instante (µs desde o boot) em que uma espera temporizada expira. `0` =
     /// sem prazo. Usado por `nanosleep` e `futex` com timeout.
     pub(crate) wake_deadline: u64,
+    /// Valor de `IA32_FS_BASE` desta thread (TLS no espaço de usuário).
+    ///
+    /// Threads de um mesmo processo compartilham o espaço de endereço, mas cada
+    /// uma tem o seu bloco TLS; o registrador `FS` é por thread e o kernel o
+    /// reprograma a cada troca de contexto (ver [`restore_thread_state`]).
+    pub(crate) fs_base: u64,
+    /// Posição desta thread na fila de espera do futex, na ordem de chegada.
+    ///
+    /// A fila é implícita (os slots do escalonador), mas a ordem é explícita:
+    /// `wake_futex` acorda os menores `futex_sequence` primeiro, o que garante
+    /// FIFO entre threads que esperam na mesma palavra — sem isto a ordem
+    /// dependeria do índice do slot e uma thread poderia passar fome.
+    pub(crate) futex_sequence: u64,
     /// Faixas anônimas vivas de `mmap`. Vazio em processos que nunca mapearam.
     pub(crate) mappings: [Mapping; MAX_MAPPINGS],
     pub(crate) mapping_count: usize,
@@ -232,7 +253,10 @@ impl Process {
         signal_restorer: 0,
         signal_frame: None,
         fpu_state: FpuState::EMPTY,
+        // O kernel roda em ring 3 com FS livre: o PID 1 nasce sem TLS.
+        fs_base: 0,
         futex_address: 0,
+        futex_sequence: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
         wake_deadline: 0,
         mappings: [Mapping::EMPTY; MAX_MAPPINGS],
@@ -414,11 +438,12 @@ pub fn set_current_futex(address: u64, bitset: u64) {
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
     let process = &mut scheduler.processes[scheduler.current];
     process.futex_address = address;
-    process.futex_bitset = if bitset == 0 {
+        process.futex_bitset = if bitset == 0 {
         imagineos_abi::FUTEX_BITSET_MATCH_ANY
     } else {
         bitset
     };
+    process.futex_sequence = next_futex_sequence();
 }
 
 /// Salva o estado FPU/SSE do processo atualmente em execução.
@@ -446,7 +471,40 @@ pub fn restore_fpu_for(frame: *mut TrapFrame) {
         unsafe {
             fpu::restore(scheduler.processes[slot].fpu_state.as_ptr());
         }
+        write_fs_base(scheduler.processes[slot].fs_base);
     }
+}
+
+/// MSR `IA32_FS_BASE`: base do segmento `FS`, usada como ponteiro do TLS em
+/// modo longo (o `base` do descritor é ignorado, valendo só a do MSR).
+const IA32_FS_BASE: u32 = 0xC000_0100;
+
+/// Programa `IA32_FS_BASE`. `wrmsr` exige `ecx` = MSR, `edx:eax` = valor.
+fn write_fs_base(value: u64) {
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") IA32_FS_BASE,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Lê `IA32_FS_BASE` (usado ao criar uma thread, para herdar o TLS do pai).
+fn read_fs_base() -> u64 {
+    let (low, high): (u32, u32);
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") IA32_FS_BASE,
+            out("eax") low,
+            out("edx") high,
+            options(nostack, preserves_flags)
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
 }
 
 pub fn current_credentials() -> (u32, u32, bool) {
@@ -830,28 +888,76 @@ pub(crate) fn block_current(frame: *mut TrapFrame, timed: bool) -> (*mut TrapFra
     (next, switched)
 }
 
-/// Acorda até `count` threads bloqueadas em `address` cujo conjunto de bits
-/// intercepta `bitset`. Devolve quantas foram acordadas.
+/// Contador que ordena a entrada na fila de futex.
+///
+/// Avança a cada `FUTEX_WAIT`; é o desempate FIFO entre threads que esperam a
+/// mesma palavra. `Relaxed` basta: os valores são usados por uma só CPU e a
+/// ordem entre eles vem da própria entrada na syscall.
+static NEXT_FUTEX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// Reserva a posição de uma nova espera na fila.
+pub(crate) fn next_futex_sequence() -> u64 {
+    NEXT_FUTEX_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Acorda até `count` threads bloqueadas em `address`, na **ordem de chegada**,
+/// cujo conjunto de bits intercepta `bitset`. Devolve quantas foram acordadas.
+///
+/// A fila é formada pelos slots com `futex_address == address`; ordenar por
+/// `futex_sequence` dá o FIFO que `pthread_cond_broadcast` e os `Mutex` da `std`
+/// esperam (sem ele, a escolha dependeria do índice do slot). Um `count == 0`
+/// não acorda ninguém, como no Linux — é o que permite “notificar sem despertar”.
 pub fn wake_futex(address: u64, count: usize, bitset: u64) -> usize {
+    if count == 0 {
+        return 0;
+    }
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
     let mut woken = 0usize;
-    for process in scheduler.processes.iter_mut() {
-        if woken >= count {
+    // `MAX_PROCESSES` é pequeno: uma seleção por menor sequência é O(n²) no
+    // pior caso, mas evita alocar um vetor de índuces no kernel (`no_std`).
+    let mut picked = [false; MAX_PROCESSES];
+    while woken < count {
+        let mut best: Option<usize> = None;
+        for (index, process) in scheduler.processes.iter().enumerate() {
+            if picked[index]
+                || !process.active
+                || process.zombie
+                || process.futex_address != address
+                || process.futex_bitset & bitset == 0
+            {
+                continue;
+            }
+            match best {
+                Some(best_index)
+                    if scheduler.processes[best_index].futex_sequence
+                        <= process.futex_sequence => {}
+                _ => best = Some(index),
+            }
+        }
+        let Some(index) = best else {
             break;
-        }
-        if !process.active || process.zombie || process.futex_address != address {
-            continue;
-        }
-        if process.futex_bitset & bitset == 0 {
-            continue;
-        }
+        };
+        picked[index] = true;
+        let process = &mut scheduler.processes[index];
         process.futex_address = 0;
+        process.futex_sequence = 0;
         process.wake_deadline = 0;
         // Espera é I/O-bound: quem acorda volta ao topo da fila.
         process.priority = Priority::DEFAULT;
         woken += 1;
     }
     woken
+}
+
+/// Remove a thread do slot `current` da fila de futex, se estiver nela.
+///
+/// Chamado quando a thread morre. Idempotente: uma thread que não está na fila
+/// não muda. O timeout usa o mesmo par de escritas dentro de
+/// [`expire_timed_waits`], que já tem o empréstimo mutável do slot.
+fn leave_futex_queue(scheduler: &mut Scheduler, index: usize) {
+    let process = &mut scheduler.processes[index];
+    process.futex_address = 0;
+    process.futex_sequence = 0;
 }
 
 /// Libera as esperas cujo prazo já venceu.
@@ -866,15 +972,21 @@ pub(crate) fn expire_timed_waits(scheduler: &mut Scheduler) {
             continue;
         }
         process.wake_deadline = 0;
-        let result = if process.futex_address != 0 {
+        let in_futex = process.futex_address != 0;
+        let frame = process.frame;
+        if in_futex {
+            // Timeout de futex: sai da fila antes de devolver `ETIMEDOUT`.
             process.futex_address = 0;
+            process.futex_sequence = 0;
+        }
+        let result = if in_futex {
             crate::abi::trap::ETIMEDOUT
         } else {
             0
         };
-        if !process.frame.is_null() {
+        if !frame.is_null() {
             unsafe {
-                (*process.frame).rax = result as u64;
+                (*frame).rax = result as u64;
             }
         }
     }
@@ -951,6 +1063,9 @@ fn schedule(frame: *mut TrapFrame, exiting: bool) -> *mut TrapFrame {
         scheduler.processes[current].zombie = true;
         scheduler.processes[current].stopped = false;
         scheduler.processes[current].waiting_for = 0;
+        // Um zumbi não pode continuar na fila de futex: `wake_futex` o pularia
+        // (checa `zombie`), mas a sequência ficaria presa ao slot reutilizado.
+        leave_futex_queue(scheduler, current);
         // Fecha os descritores do processo que terminou. Sem isto as pontas de
         // pipe entregues a um filho continuavam contadas para sempre, e um
         // leitor jamais veria EOF (`cat` girava em EAGAIN indefinidamente em
@@ -1023,6 +1138,8 @@ fn schedule(frame: *mut TrapFrame, exiting: bool) -> *mut TrapFrame {
         unsafe {
             fpu::restore(scheduler.processes[candidate].fpu_state.as_ptr());
         }
+        // TLS é por thread: o `FS` que estava ativo é o da thread que saiu.
+        write_fs_base(next.fs_base);
         return next.frame;
     }
 
@@ -1360,8 +1477,12 @@ pub fn fork_current(frame: *mut TrapFrame) -> *mut TrapFrame {
         signal_restorer: parent.signal_restorer,
         signal_frame: None,
         fpu_state,
+        // O filho herda o TLS do pai no momento do `fork`; ele pode trocá-lo
+        // depois com `set_thread_area` no runtime.
+        fs_base: read_fs_base(),
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        futex_sequence: 0,
         wake_deadline: 0,
         mappings: [Mapping::EMPTY; MAX_MAPPINGS],
         mapping_count: 0,
@@ -1881,8 +2002,12 @@ pub fn create_thread(
         signal_restorer: parent.signal_restorer,
         signal_frame: None,
         fpu_state,
+        // `ThreadCreate.tls == 0` significa "não mexe": a thread herda o TLS
+        // do criador; caso contrário recebe o bloco TLS do pedido.
+        fs_base: if request.tls != 0 { request.tls } else { read_fs_base() },
         futex_address: 0,
         futex_bitset: imagineos_abi::FUTEX_BITSET_MATCH_ANY,
+        futex_sequence: 0,
         wake_deadline: 0,
         mappings: parent.mappings,
         mapping_count: parent.mapping_count,
@@ -1924,10 +2049,15 @@ pub fn exit_thread(frame: *mut TrapFrame, status: i32) -> *mut TrapFrame {
 // Memória mapeada (`mmap`)
 // ---------------------------------------------------------------------------
 
-/// Registra uma faixa anônima e instala as suas páginas.
+/// Registra uma VMA anônima **sem** instalar páginas.
 ///
-/// Devolve `false` quando a tabela do processo está cheia ou o espaço não tem
-/// como instalar o mapeamento; nada fica mapeado nesse caso.
+/// O espaço virtual é só reservado: cada página nasce zerada no primeiro acesso
+/// (`handle_mmap_fault`). Mapear 64 MiB de uma vez custa 64 MiB de frames; a
+/// reserva preguiçosa mantém o custo proporcional ao que o processo realmente
+/// toca — que é como `mmap` funciona num kernel de verdade.
+///
+/// Devolve `false` se a tabela do processo está cheia ou se a faixa já tem
+/// páginas mapeadas por outra origem (pilha, imagem, outra VMA).
 pub fn add_mapping(mapping: Mapping) -> bool {
     let scheduler = unsafe { &mut *SCHEDULER.0.get() };
     let process = &mut scheduler.processes[scheduler.current];
@@ -1937,15 +2067,69 @@ pub fn add_mapping(mapping: Mapping) -> bool {
     let Some(address_space) = process.address_space else {
         return false;
     };
-    if address_space
-        .try_map_range(mapping.start, mapping.length)
-        .is_err()
+    // A faixa não pode se sobrepor a nenhuma VMA viva.
+    let end = mapping.end();
+    if (0..process.mapping_count).any(|index| process.mappings[index].overlaps(mapping.start, end))
     {
         return false;
+    }
+    // E nenhuma página pode já estar presente (imagem/pilha/heap).
+    let mut page = mapping.start;
+    while page < end {
+        if address_space.page_is_present(page) {
+            return false;
+        }
+        page = page.saturating_add(PAGE_SIZE);
     }
     process.mappings[process.mapping_count] = mapping;
     process.mapping_count += 1;
     true
+}
+
+/// Trata um `#PF` de escrita em uma página de VMA ainda não populada.
+///
+/// Devolve `true` quando a página foi instalada e a instrução pode ser
+/// retomada; `false` quando o endereço não pertence a nenhuma VMA (falha real,
+/// que mata o processo). A página nasce zerada e com a permissão da VMA.
+///
+/// `address` é o `CR2` do fault; a página é a que o contém, então um acesso a
+/// `vma.start + 1` popula `vma.start`.
+pub fn handle_mmap_fault(address: u64) -> bool {
+    let scheduler = unsafe { &mut *SCHEDULER.0.get() };
+    let process = &mut scheduler.processes[scheduler.current];
+    let page = address & !(PAGE_SIZE - 1);
+    let Some(mapping) = process.mappings[..process.mapping_count]
+        .iter()
+        .find(|mapping| address >= mapping.start && address < mapping.end())
+        .copied()
+    else {
+        return false;
+    };
+    let Some(address_space) = process.address_space else {
+        return false;
+    };
+    // Uma página já presente e somente-leitura é violação de proteção, não um
+    // fault de preenchimento: devolver `true` aqui faria o `iretq` repetir a
+    // instrução para sempre (loop infinito de `#PF`).
+    if address_space.page_is_present(page) {
+        return false;
+    }
+    let flags = if mapping.writable {
+        crate::paging::PageFlags::READ_WRITE
+    } else {
+        crate::paging::PageFlags::READ_EXEC
+    };
+    match address_space.map_user_page_with(page, flags) {
+        Ok(_) => true,
+        // Sem frame: deixa o fault seguir o caminho normal (`SIGSEGV`).
+        Err(_) => false,
+    }
+}
+
+/// Frame de trap da thread em execução, para retomada após um fault tratado.
+pub fn current_trap_frame() -> *mut TrapFrame {
+    let scheduler = unsafe { &*SCHEDULER.0.get() };
+    scheduler.processes[scheduler.current].frame
 }
 
 /// Remove da tabela as faixas que se sobrepõem a `[start, start + length)`,
@@ -1968,27 +2152,58 @@ pub fn forget_mappings_in(start: u64, length: u64) {
     process.mapping_count = write;
 }
 
-/// Desmapeia as páginas da faixa e esquece a tabela.
+/// Desmapeia as páginas da faixa e ajusta a tabela de VMA.
 ///
-/// Página não mapeada no meio da faixa não é erro: `munmap` só remove o que
-/// existe, como no POSIX.
+/// O POSIX permite `munmap` de um subconjunto: a VMA que contém a faixa é
+/// **dividida**. Sem isto, `munmap(metade)` perderia o vínculo com a outra
+/// metade, e o `#PF` da segunda parte deixaria de popular as páginas.
+///
+/// Apenas páginas existentes são liberadas (`unmap_user_page` devolve o frame ao
+/// alocador); páginas nunca tocadas não têm o que liberar.
 pub fn remove_mapping_range(start: u64, length: u64) {
     let end = start.saturating_add(length);
     let space = {
         let scheduler = unsafe { &mut *SCHEDULER.0.get() };
         let process = &mut scheduler.processes[scheduler.current];
-        let mut write = 0;
+        let mut remapped = [Mapping::EMPTY; MAX_MAPPINGS];
+        let mut count = 0usize;
+        let mut overflow = false;
         for read in 0..process.mapping_count {
             let mapping = process.mappings[read];
             if !mapping.overlaps(start, end) {
-                process.mappings[write] = mapping;
-                write += 1;
+                remapped[count] = mapping;
+                count += 1;
+                continue;
+            }
+            // Parte à esquerda da remoção, se sobrar.
+            if mapping.start < start && count < MAX_MAPPINGS {
+                remapped[count] = Mapping {
+                    start: mapping.start,
+                    length: start - mapping.start,
+                    writable: mapping.writable,
+                };
+                count += 1;
+            }
+            // Parte à direita da remoção, se sobrar. Uma VMA dividida em duas
+            // pode estourar a tabela; nesse caso ela vira uma só (perde-se a
+            // granularidade, não a memória).
+            if mapping.end() > end {
+                let right = Mapping {
+                    start: end,
+                    length: mapping.end() - end,
+                    writable: mapping.writable,
+                };
+                if count < MAX_MAPPINGS {
+                    remapped[count] = right;
+                    count += 1;
+                } else {
+                    overflow = true;
+                }
             }
         }
-        for index in write..process.mapping_count {
-            process.mappings[index] = Mapping::EMPTY;
-        }
-        process.mapping_count = write;
+        process.mappings = remapped;
+        process.mapping_count = count;
+        let _ = overflow;
         process.address_space
     };
     if let Some(space) = space {
