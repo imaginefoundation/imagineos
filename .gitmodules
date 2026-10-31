@@ -1,3 +1,7 @@
 [submodule "dnu"]
 	path = dnu
 	url = https://github.com/thefirstimaginer/dnu.git
+
+[submodule "imagine-tools"]
+	path = imagine-tools
+	url = https://github.com/imaginefoundation/imagine-tools.git
