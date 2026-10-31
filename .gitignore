@@ -10,3 +10,11 @@ third_party/*
 toolchain/
 /.testing
 /examples
+
+# Checkout do DNU dentro deste repositório: é repositório próprio e seus
+# artefatos de build não pertencem a este workspace.
+/dnu/.build/
+/dnu/target/
+/dnu/**/target/
+/dnu/Cargo.lock
+/dnu/**/Cargo.lock

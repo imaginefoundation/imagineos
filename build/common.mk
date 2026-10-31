@@ -43,21 +43,36 @@ AR             ?= ar
 # ==============================================================================
 BUILD_DIR      := $(ROOT)/.build
 DISTRO_DIR     := $(BUILD_DIR)/distro
-KERNEL         := $(ROOT)/target/$(TARGET)/release/imagineos-dnu-kernel
+
+# ------------------------------------------------------------------------------
+# Kernel (repositório DNU)
+# ------------------------------------------------------------------------------
+# O kernel e o formato DEF pertencem ao repositório DNU, que publica um único
+# artefato: o `dzImage`. O ImagineOS nunca compila o kernel nem carrega o ELF
+# cru: consome o contêiner e extrai o que precisa dele.
+DNU_DIR        ?= $(ROOT)/dnu
+DNU_MK         := $(DNU_DIR)/Makefile
 DZ_IMAGE       := $(BUILD_DIR)/dzImage
-RAMFS_IMAGE    := $(BUILD_DIR)/initramfs.tar
-RAMFS_INST_IMG := $(BUILD_DIR)/initramfs-installed.tar
+DZIMAGE_BIN    := $(DNU_DIR)/.build/dzimage
+KERNEL         := $(BUILD_DIR)/kernel.elf
+
+# A árvore montada por ramfs.mk (esqueleto `ramfs/` + userland) é o
+# `RAMFS_DIR` com que o DNU empacota o initramfs dentro do dzImage.
+RAMFS_TREE     := $(BUILD_DIR)/ramfs
+
+# Ferramentas de host do DNU (utilizadas pelo userland e pelo disco).
+DNU_PACK_BIN   := $(DNU_DIR)/.build/dnu-pack
+DNULINK_BIN    := $(DNU_DIR)/.build/dnulink
+DFS_IMAGE_BIN  := $(DNU_DIR)/.build/dfs-image
+
+# ISO, imagem de disco e disco do instalador.
 ISO_DIR        := $(BUILD_DIR)/iso
 ISO_IMAGE      := $(DISTRO_DIR)/$(K_NAME)-$(shell date +%Y-%m-%d-%H-%M)-$(CODENAME).iso
 DISK_IMAGE     ?= $(BUILD_DIR)/imagineos-disk.img
 INSTALL_TARGET := $(BUILD_DIR)/installer-target.img
-DFS_IMAGE_BIN  := $(BUILD_DIR)/dfs-image
-DNU_PACK_BIN   := $(BUILD_DIR)/dnu-pack
-DNULINK_BIN    := $(BUILD_DIR)/dnulink
 
 # Fontes de terceiros e recursos
 LIMINE_DIR      := $(ROOT)/third_party/limine
-FONT_ASSET      := $(ROOT)/common/tools/assets/zap-vga16.psf
 
 # ==============================================================================
 # RAMFS E PROGRAMAS DE USUÁRIO

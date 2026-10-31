@@ -59,7 +59,7 @@ que coleta as respostas do protocolo Limine e monta o `BootInfo`. O USTAR
  extensão: `/sbin/init`, `/sbin/getty` e comandos em `/bin`. Todos eles são
 empacotados no formato DEF (magic `DNUF`) por `dnu-pack`; o kernel não carrega
 mais ELF de userspace. A fonte PSF
-8x16 `common/tools/assets/zap-vga16.psf` é incorporada ao kernel como
+8x16 `dnu/src/assets/zap-vga16.psf` é incorporada ao kernel como
 fallback para uma fonte inválida ou ausente no RAMFS. Ela também é copiada
 para `system/fonts/zap-vga16.psf` dentro do USTAR, de modo que o instalador
 inclui a fonte na raiz DFS persistente.

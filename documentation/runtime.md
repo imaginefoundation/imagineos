@@ -74,7 +74,7 @@ O DEF é um contêiner executável simples e verificável, definido em
 
 ## 3. Carregamento no Kernel
 
-O carregador de DEF vive em `dnu_kernel/src/exec/def.rs` e é o ponto de entrada de
+O carregador de DEF vive em `dnu/src/exec_def.rs` (repositório DNU) e é o ponto de entrada de
 todo executável em Ring 3. O processo de carga é:
 
 1. **Leitura e validação do cabeçalho** — confere `magic`, `arch`, `type`,
@@ -110,7 +110,8 @@ pacotes adulterados ou corrompidos.
 
 ## 4. Empacotamento: `dnu-pack`
 
-O `dnu-pack` (fonte em `common/tools/dnu-pack.rs`, compilado por `build/tools.mk`) é a
+O `dnu-pack` (fonte em `dnu/tools/dnu-pack.rs`, compilado por `dnu/Makefile` e promovido
+por `build/tools.mk`) é a
 ferramenta de linha de comando que transforma fontes em um arquivo DEF.
 
 ### 4.1 Uso

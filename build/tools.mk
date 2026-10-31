@@ -10,22 +10,13 @@
 # Alvos:        tools
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
-# O dnu-pack é um programa de host que precisa do crate imagineos-abi para
-# reutilizar a definição do formato DEF (magic, header, validação). Como o
-# .cargo/config.toml fixa o target padrão como x86_64-unknown-none (bare-metal),
-# compilamos a abi explicitamente para o triple do host para que o binário de
-# host possa linkar contra ela.
-HOST_TRIPLE   := $(shell rustc -vV | sed -n 's/^host: //p')
-ABI_MANIFEST  := $(ROOT)/common/shared/abi/Cargo.toml
-ABI_TARGET_DIR := $(BUILD_DIR)/tools/abi-target
-ABI_RLIB      := $(ABI_TARGET_DIR)/$(HOST_TRIPLE)/release/libimagineos_abi.rlib
-
-# O dnu-pack converte o ELF que o toolchain emite para o contêiner DEF que o
-# kernel carrega (é o único formato de userspace aceito). O build de userland
-# depende dele, então esta etapa precisa estar pronta antes.
+# O `dnu-pack`, o `dnulink` e o `dfs-image` são ferramentas do repositório DNU
+# (elas falam DEF e manipulam o DFS, formatos que nascem no kernel). Elas são
+# construídas pelo Makefile do DNU; aqui só as promovemos para o `.build/` do
+# ImagineOS, para o userland e o disco consumirem.
 .PHONY: tools dnu-pack dnulink
 
-tools: $(DFS_IMAGE_BIN) $(DNU_PACK_BIN) $(DNULINK_BIN)
+tools: $(DNU_PACK_BIN) $(DNULINK_BIN) $(DFS_IMAGE_BIN)
 
 dnu-pack: $(DNU_PACK_BIN)
 
@@ -34,24 +25,13 @@ dnu-pack: $(DNU_PACK_BIN)
 # `~/.cargo/dreamcore/` para o `cargo build` do usuário encontrá-lo.
 dnulink: $(DNULINK_BIN)
 
-$(DFS_IMAGE_BIN): $(ROOT)/common/tools/dfs-image.rs $(ROOT)/dnu_kernel/src/fs/dfs/dfs.rs \
-                  $(ROOT)/dnu_kernel/src/fs/gpt.rs $(ROOT)/dnu_kernel/src/drivers/block.rs
+$(DNU_PACK_BIN) $(DNULINK_BIN) $(DFS_IMAGE_BIN): $(DNU_MK) \
+        $(wildcard $(DNU_DIR)/tools/*.rs) $(wildcard $(DNU_DIR)/src/*.rs)
+	@test -d $(DNU_DIR) || { echo "repositório DNU ausente em $(DNU_DIR)"; exit 1; }
+	$(MAKE) -C $(DNU_DIR) tools
 	@mkdir -p $(BUILD_DIR)
-	$(RUSTC) --edition 2021 $< -o $@
-
-$(ABI_RLIB): $(ABI_MANIFEST) $(wildcard $(ROOT)/common/shared/abi/src/*.rs)
-	$(CARGO) build --manifest-path $(ABI_MANIFEST) --release \
-		--target $(HOST_TRIPLE) --target-dir $(ABI_TARGET_DIR)
-
-$(DNU_PACK_BIN): $(ROOT)/common/tools/dnu-pack.rs $(ABI_RLIB)
-	@mkdir -p $(BUILD_DIR)
-	$(RUSTC) --edition 2024 -C panic=abort \
-		--extern imagineos_abi=$(ABI_RLIB) $< -o $@
-
-$(DNULINK_BIN): $(ROOT)/common/tools/dnulink.rs $(ABI_RLIB)
-	@mkdir -p $(BUILD_DIR)
-	$(RUSTC) --edition 2024 -C panic=abort \
-		--extern imagineos_abi=$(ABI_RLIB) $< -o $@
+	cp -f $(DNU_DIR)/.build/dnu-pack $(DNU_DIR)/.build/dnulink \
+		$(DNU_DIR)/.build/dfs-image $(BUILD_DIR)/
 
 # ------------------------------------------------------------------------------
 # Alvo Rust x86_64-unknown-dreamcore

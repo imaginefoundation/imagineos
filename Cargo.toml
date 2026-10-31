@@ -1,7 +1,19 @@
-[package]
-name = "imagineos"
-version = "0.1.0"
-edition = "2024"
+# ==============================================================================
+# ImagineOS — workspace do userspace
+# ==============================================================================
+#
+# O kernel `dreamcore` e o formato DEF não vivem aqui: pertencem ao repositório
+# DNU (submódulo/checkout em `dnu/`), que publica um único artefato, o
+# `.build/dzImage`. Este workspace contém apenas o que roda no espaço de
+# usuário e o que liga o userspace ao kernel:
+#
+#   common/shared/abi        contrato binário (cópia de referência do DNU)
+#   common/userland/api      API do userspace
+#   common/userland/runtimes runtimes Rust e C
+#
+# O ABI é mantido aqui para a libc e o runtime Rust linkarem sem depender do
+# checkout do kernel; o DNU é a fonte de verdade do crate (ver
+# `dnu/abi/imagineos_abi`), e as duas cópias precisam ser idênticas.
 
 [workspace]
 members = [
@@ -9,21 +21,8 @@ members = [
     "common/userland/api",
     "common/userland/runtimes/ImagineRustRuntime",
     "common/userland/runtimes/ImagineCRuntime",
-    "dnu_kernel",
 ]
 resolver = "2"
-
-[dependencies]
-limine = "0.5.0"
-imagineos_abi = { path = "common/shared/abi" }
-
-[[bin]]
-name = "imagineos-dnu-kernel"
-path = "dnu_kernel/src/main.rs"
-test = false
-
-[features]
-kernel-debug = []
 
 [profile.dev]
 panic = "abort"

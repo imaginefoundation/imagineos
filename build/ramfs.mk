@@ -1,117 +1,110 @@
 # ==============================================================================
-# ImagineOS - estrutura e imagem do initramfs (estilo Linux/FHS)
+# ImagineOS - estrutura e conteúdo da raiz volátil (estilo Linux/FHS)
 # ==============================================================================
 #
-# Cria a árvore `ramfs/` na raiz e empacota o USTAR `.build/initramfs.tar`,
-# que o Limine carrega como módulo de boot. A árvore segue o FHS:
+# A árvore `ramfs/` da raiz deste repositório é o esqueleto do sistema; ela é
+# entregue ao repositório DNU (`RAMFS_DIR`) e entra no initramfs **dentro** do
+# dzImage, ao lado do kernel. O ImagineOS não empacota mais um
+# `initramfs.tar`/`initramfs-installed.tar` próprio: o contêiner é a única
+# unidade de boot.
+#
+# Os artefatos do userland (programas, libc, crt, linker script) são montados
+# em `.build/ramfs/` e copiados para a árvore antes de o DNU empacotar:
 #   * a árvore de dados de `ramfs/` com a fonte PSF copiada;
 #   * os headers da libc e as libs estáticas (libdreamcore.a, libc.a, libm.a);
 #   * os objetos crt0/crt1/crti/crtn e o linker script do userspace;
 #   * os binários compilados (init, getty, shell e utilitários);
-#   * o payload do instalador (dzImage, Limine e initramfs instalado).
+#   * o payload do instalador (dzImage, Limine) em system/install/.
+#
+# O `dzImage` instalado como payload é o mesmo que o DNU publica; o boot da
+# ISO carrega `boot/dzImage` + `boot/initramfs.tar`, e o instalador copia o
+# dzImage para o disco (ver `boot/startup.nsh` e `build/disk.mk`).
 #
 # Uso isolado:  make -f build/ramfs.mk
-# Alvos:        ramfs, ramfs-image
+# Alvos:        ramfs, ramfs-tree, ramfs-image
 RAMFS_MK := $(abspath $(lastword $(MAKEFILE_LIST)))
 
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
-# As peças que entram no tar vêm de outros makefiles. Em vez de duplicar suas
-# regras aqui, pedimos que o make os construa recursivamente: kernel.mk produz
-# o dzImage e userland.mk produz os programas e as libs de userspace.
+# As peças que entram na árvore vêm de outros makefiles. Em vez de duplicar
+# suas regras aqui, pedimos que o make os construa recursivamente.
 KERNEL_MK   := $(ROOT)/build/kernel.mk
 USERLAND_MK := $(ROOT)/build/userland.mk
 TOOLS_MK    := $(ROOT)/build/tools.mk
 
-# Todo arquivo da árvore `ramfs/` é dependência do tar. Sem isto, editar um
-# arquivo de `ramfs/` (um script em `etc/`, uma fonte) não disparava a
-# reconstrução e a imagem continuava com a versão antiga em cache.
+# Todo arquivo da árvore `ramfs/` é dependência da árvore montada: editar um
+# script em `etc/` (ou trocar uma fonte) precisa refletir no dzImage.
 RAMFS_SOURCES := $(shell find $(RAMFS_ROOT) -type f -o -type l 2>/dev/null)
 
-.PHONY: ramfs ramfs-image ramfs-inputs
+# Árvore completa (dados + userland) que o DNU empacota; `RAMFS_TREE` vem de
+# common.mk, o mesmo caminho que kernel.mk passa ao DNU.
+
+.PHONY: ramfs ramfs-tree ramfs-image ramfs-inputs
 
 ramfs:
 	@mkdir -p $(addprefix $(RAMFS_ROOT)/,$(RAMFS_DIRS))
 
-# Constrói tudo o que o USTAR empacota antes de montá-lo.
+# Constrói tudo o que entra na árvore antes de montá-la. O dzImage só é
+# montado em `ramfs-image`/`iso`, depois desta árvore: a regra do dzImage lista
+# `ramfs/` como dependência, então pedi-lo aqui criaria um ciclo.
 ramfs-inputs: ramfs
-	$(MAKE) -f $(KERNEL_MK) dzimage
 	$(MAKE) -f $(TOOLS_MK) tools
 	$(MAKE) -f $(USERLAND_MK) user-programs user-libs \
 		$(BUILD_DIR)/user/utilities/hello_c
 
-ramfs-image: ramfs-inputs
-	$(MAKE) -f $(RAMFS_MK) $(RAMFS_IMAGE)
+# `ramfs-image` mantém o nome histórico: agora monta a árvore e deixa o DNU
+# empacotá-la no dzImage.
+ramfs-image: ramfs-tree
+	$(MAKE) -f $(KERNEL_MK) dzimage
 
-# A regra do tar só lista entradas que este makefile sabe localizar: os
-# artefatos compilados (`dzImage`, programas, libs) são garantidos
-# por `ramfs-inputs` e usados diretamente nos comandos abaixo. Declará-los como
-# pré-requisitos aqui exigiria as regras de kernel.mk/userland.mk, que é
-# exatamente o acoplamento que a divisão elimina.
-$(BUILD_DIR)/initramfs.tar: ramfs $(RAMFS_SOURCES) \
-                $(LIMINE_DIR)/BOOTX64.EFI $(ROOT)/boot/limine.conf \
-                $(ROOT)/boot/startup.nsh $(USERLAND_MK) $(KERNEL_MK)
-	@test -f $(DZ_IMAGE) || (echo "dzImage ausente"; exit 1)
+ramfs-tree: ramfs-inputs $(RAMFS_SOURCES)
 	@test -f $(BUILD_DIR)/user/sbin/init || (echo "programas de userspace ausentes"; exit 1)
-	rm -rf $(BUILD_DIR)/ramfs
-	mkdir -p $(BUILD_DIR)/ramfs
-	cp -a $(RAMFS_ROOT)/. $(BUILD_DIR)/ramfs/
-	cp $(FONT_ASSET) $(BUILD_DIR)/ramfs/system/fonts/zap-vga16.psf
-	mkdir -p $(BUILD_DIR)/ramfs/usr/include $(BUILD_DIR)/ramfs/usr/lib/tcc
-	cp -a $(USER_LIBC_DIR)/include/. $(BUILD_DIR)/ramfs/usr/include/
-	cp $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/ramfs/usr/lib/libdreamcore.a
-	cp $(BUILD_DIR)/user/libdreamcore.a $(BUILD_DIR)/ramfs/usr/lib/libc.a
+	rm -rf $(RAMFS_TREE)
+	mkdir -p $(RAMFS_TREE)
+	cp -a $(RAMFS_ROOT)/. $(RAMFS_TREE)/
+	mkdir -p $(RAMFS_TREE)/system/fonts
+	cp $(DNU_DIR)/src/assets/zap-vga16.psf $(RAMFS_TREE)/system/fonts/zap-vga16.psf
+	mkdir -p $(RAMFS_TREE)/usr/include $(RAMFS_TREE)/usr/lib/tcc
+	cp -a $(USER_LIBC_DIR)/include/. $(RAMFS_TREE)/usr/include/
+	cp $(BUILD_DIR)/user/libdreamcore.a $(RAMFS_TREE)/usr/lib/libdreamcore.a
+	cp $(BUILD_DIR)/user/libdreamcore.a $(RAMFS_TREE)/usr/lib/libc.a
 	$(AR) rcs $(BUILD_DIR)/user/libm.a $(BUILD_DIR)/user/math.o
-	cp $(BUILD_DIR)/user/libm.a $(BUILD_DIR)/ramfs/usr/lib/libm.a
-	cp $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/ramfs/usr/lib/crt0.o
-	cp $(BUILD_DIR)/user/crt.o $(BUILD_DIR)/ramfs/usr/lib/crt1.o
-	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crti.o
-	cp $(BUILD_DIR)/user/crt_empty.o $(BUILD_DIR)/ramfs/usr/lib/crtn.o
-	cp $(ROOT)/common/userland/linker.ld $(BUILD_DIR)/ramfs/usr/lib/imagineos.ld
+	cp $(BUILD_DIR)/user/libm.a $(RAMFS_TREE)/usr/lib/libm.a
+	cp $(BUILD_DIR)/user/crt.o $(RAMFS_TREE)/usr/lib/crt0.o
+	cp $(BUILD_DIR)/user/crt.o $(RAMFS_TREE)/usr/lib/crt1.o
+	cp $(BUILD_DIR)/user/crt_empty.o $(RAMFS_TREE)/usr/lib/crti.o
+	cp $(BUILD_DIR)/user/crt_empty.o $(RAMFS_TREE)/usr/lib/crtn.o
+	cp $(ROOT)/common/userland/linker.ld $(RAMFS_TREE)/usr/lib/imagineos.ld
 	# Binários userland
-	cp $(BUILD_DIR)/user/sbin/init $(BUILD_DIR)/ramfs/sbin/init
-	cp $(BUILD_DIR)/user/sbin/getty $(BUILD_DIR)/ramfs/sbin/getty
-	cp $(BUILD_DIR)/user/bin/shell $(BUILD_DIR)/ramfs/bin/shell
-	for utility in $(USER_UTILITIES); do \
-		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
-	done
-	for utility in $(USER_C_UTILITIES); do \
-		cp $(BUILD_DIR)/user/utilities/$$utility $(BUILD_DIR)/ramfs/bin/$$utility; \
+	cp $(BUILD_DIR)/user/sbin/init $(RAMFS_TREE)/sbin/init
+	cp $(BUILD_DIR)/user/sbin/getty $(RAMFS_TREE)/sbin/getty
+	cp $(BUILD_DIR)/user/bin/shell $(RAMFS_TREE)/bin/shell
+	for utility in $(USER_UTILITIES) $(USER_C_UTILITIES); do \
+		cp $(BUILD_DIR)/user/utilities/$$utility $(RAMFS_TREE)/bin/$$utility; \
 	done
 	# Programas Rust do alvo x86_64-unknown-dreamcore. São opcionais: se a
 	# ferramenta não foi construída, a imagem segue sem eles.
 	for program in rust-hello rust-std-hello; do \
 		binary=$(ROOT)/examples/$$program/target/x86_64-unknown-dreamcore/release/$$program; \
-		if [ -f "$$binary" ]; then cp "$$binary" $(BUILD_DIR)/ramfs/bin/$$program; fi; \
+		if [ -f "$$binary" ]; then cp "$$binary" $(RAMFS_TREE)/bin/$$program; fi; \
 	done
 	# Stack Liminal: display server + window manager/compositor.
-	cp $(BUILD_DIR)/user/bin/liminal-server $(BUILD_DIR)/ramfs/bin/liminal-server
-	cp $(BUILD_DIR)/user/bin/liminal-client $(BUILD_DIR)/ramfs/bin/liminal-client
+	cp $(BUILD_DIR)/user/bin/liminal-server $(RAMFS_TREE)/bin/liminal-server
+	cp $(BUILD_DIR)/user/bin/liminal-client $(RAMFS_TREE)/bin/liminal-client
 
 	# Temas (.tpf — Theme Package File): empacota o tema clássico num TAR ustar
 	# com `themeConfig.json` (nome, autor, versão, descrição, compositor) e o
 	# CSS `window/windowTheme.css`. O WM olha para system/themes/current.tpf,
 	# com fallback classic.tpf; as fontes do tema ficam em ramfs/system/themes/classic.
 	# Sem as fontes do tema, o WM usa o tema embutido — não é erro de build.
-	mkdir -p $(BUILD_DIR)/ramfs/system/themes
+	mkdir -p $(RAMFS_TREE)/system/themes
 	if [ -f $(RAMFS_ROOT)/system/themes/classic/themeConfig.json ]; then \
 		tar --format=ustar -C $(RAMFS_ROOT)/system/themes/classic \
-			--exclude='*cursor*' -cf $(BUILD_DIR)/ramfs/system/themes/classic.tpf themeConfig.json window; \
-		cp $(BUILD_DIR)/ramfs/system/themes/classic.tpf $(BUILD_DIR)/ramfs/system/themes/current.tpf; \
+			--exclude='*cursor*' -cf $(RAMFS_TREE)/system/themes/classic.tpf themeConfig.json window; \
+		cp $(RAMFS_TREE)/system/themes/classic.tpf $(RAMFS_TREE)/system/themes/current.tpf; \
 	else \
 		echo "temas: fontes em ramfs/system/themes/classic ausentes; WM usara o tema embutido"; \
 	fi
 
-	# Tar para o instalador do SO
-	tar --format=ustar --numeric-owner --owner=0 --group=0 \
-		--exclude=bin/distroinstall --exclude='system/install/*' \
-		-C $(BUILD_DIR)/ramfs -cf $(RAMFS_INST_IMG) bin dev etc sbin home system tmp usr
-	# Adiciona os arquivos do instalador
-	mkdir -p $(BUILD_DIR)/ramfs/system/install
-	cp $(DZ_IMAGE) $(BUILD_DIR)/ramfs/system/install/dzImage
-	cp $(LIMINE_DIR)/BOOTX64.EFI $(BUILD_DIR)/ramfs/system/install/BOOTX64.EFI
-	cp $(ROOT)/boot/limine.conf $(BUILD_DIR)/ramfs/system/install/limine.conf
-	cp $(ROOT)/boot/startup.nsh $(BUILD_DIR)/ramfs/system/install/startup.nsh
-	cp $(RAMFS_INST_IMG) $(BUILD_DIR)/ramfs/system/install/initramfs-installed.tar
-	# Tar final do initramfs
-	tar --format=ustar --numeric-owner --owner=0 --group=0 \
-		-C $(BUILD_DIR)/ramfs -cf $@ bin dev etc sbin home system tmp usr
+	# Payload do instalador: o próprio dzImage e os arquivos do Limine chegam da
+	# ISO (`iso.mk`); aqui só garantimos o diretório.
+	mkdir -p $(RAMFS_TREE)/system/install

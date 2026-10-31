@@ -28,7 +28,7 @@ rodar `make iso` (o trecho de comandos acima já o cria). A imagem somente UEFI
 
 O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do Limine. Ele instala a GDT/TSS e uma IDT de exceções fatais, inicializa um alocador de frames de 4 KiB e um heap bump de 1 MiB, monta o arquivo USTAR e carrega `/sbin/init` como PID 1. O init inicia o `/sbin/getty`, que inicia o `/bin/shell`; o shell resolve comandos externos em `/bin`.
 
-O código-fonte do kernel fica em `dnu_kernel/src/` (o Limine carrega o dzImage, que
+O código-fonte do kernel fica no repositório DNU (`dnu/`, checkout em `dnu/src/`; o Limine carrega o dzImage, que
 é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
 `common/programs/` (apps multi-módulo) e `common/utilities/` (comandos de
 arquivo único). Programas de userspace são empacotados no formato nativo **DEF**
