@@ -15,7 +15,7 @@ The system implements a microkernel-like design with a Rust freestanding kernel 
 | Crate | Purpose |
 |-------|---------|
 | `imagineos` (root `Cargo.toml`) | Workspace orchestrator with workspace members |
-| `dnu_kernel` (`dnu/`) | Main kernel binary (`imagineos-dnu-kernel`) |
+| `dnu` (submodule `dnu/`) | Repositório DNU: kernel (`imagineos-dnu-kernel`), ABI e ferramentas DEF |
 | `common/shared/abi` | ABI definitions (syscalls, data structures, constants) |
 | `common/userland/api` | Rust userspace API crate |
 | `common/userland/runtimes` | Runtime crates (ImagineRustRuntime, dreamcore-rt, ImagineCRT) |
