@@ -1,0 +1,1 @@
+# Programas User-Space do ImagineOS (astrid-alpha1-v0.2.1)

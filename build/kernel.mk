@@ -1,66 +1,44 @@
 # ==============================================================================
-# ImagineOS - kernel, bootstrap e dzImage
+# ImagineOS - kernel e dzImage
 # ==============================================================================
 #
-# Compila o kernel `dreamcore`, o carregador `bootstrap.elf` e empacota o kernel
-# como `.build/dzImage` (payload LZ4 com tamanho e CRC32).
+# O kernel `dreamcore` e o formato DEF são propriedade do repositório DNU
+# (`$(DNU_DIR)`), que publica **um único artefato**: `.build/dzImage` (DNU
+# Zipped Image), o contêiner com o ELF do kernel e o initramfs. Toda a
+# estrutura do ImagineOS (ISO, imagem de disco, diretório do instalador) consome
+# só esse arquivo e nunca o ELF cru.
+#
+# O dzImage é montado pelo `Makefile` do DNU, com `RAMFS_DIR=` apontando para a
+# árvore montada por `ramfs.mk` (`.build/ramfs`: esqueleto `ramfs/` + userland).
+# Este makefile não compila nada do kernel.
 #
 # Uso isolado:  make -f build/kernel.mk
-# Alvos:        kernel, bootstrap, dzimage, tools
-
+# Alvos:        kernel, dzimage
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
-
-.PHONY: kernel bootstrap dzimage tools
-
-# ------------------------------------------------------------------------------
-# Kernel
-# ------------------------------------------------------------------------------
-
-kernel: $(KERNEL)
-
-$(KERNEL): $(wildcard $(ROOT)/kernel/src/**/*.rs) $(ROOT)/kernel/linker.ld $(FONT_ASSET)
-	$(CARGO) build --release --target $(TARGET) --bin dreamcore \
-		--manifest-path $(ROOT)/Cargo.toml \
-		--config 'target.x86_64-unknown-none.rustflags=["-C","link-arg=-Tkernel/linker.ld","-C","relocation-model=static"]' \
-		$(if $(KERNEL_FEATURES),--features $(KERNEL_FEATURES),)
+.PHONY: kernel dzimage
 
 # ------------------------------------------------------------------------------
-# Bootstrap (carregador Limine)
+# Kernel e dzImage (delegados ao repositório DNU)
 # ------------------------------------------------------------------------------
 
-bootstrap: $(BOOTSTRAP)
-
-$(BOOTSTRAP): $(wildcard $(ROOT)/bootstrap/*.rs) \
-              $(ROOT)/kernel/src/time.rs $(ROOT)/kernel/src/console/framebuffer.rs \
-              $(FONT_ASSET) $(ROOT)/boot/bootstrap.ld $(ROOT)/Makefile
-	$(CARGO) build --release --target $(TARGET) --bin bootstrap \
-		--manifest-path $(ROOT)/Cargo.toml \
-		--features bootstrap \
-		--target-dir $(BUILD_DIR)/bootstrap-target \
-		--config 'target.x86_64-unknown-none.rustflags=["-C","link-arg=-Tboot/bootstrap.ld","-C","relocation-model=static"]'
+# `kernel` continua existindo apenas para compatibilidade: extrai o ELF do
+# contêiner já montado (quem carrega o kernel é o Limine, a partir do dzImage).
+kernel: $(DZ_IMAGE)
 	@mkdir -p $(BUILD_DIR)
-	cp $(BUILD_DIR)/bootstrap-target/$(TARGET)/release/bootstrap $@
-
-# ------------------------------------------------------------------------------
-# Ferramentas do host usadas pelo kernel/ISO
-# ------------------------------------------------------------------------------
-
-tools: $(DZPACK_BIN) $(DFS_IMAGE_BIN)
-
-$(DZPACK_BIN): $(ROOT)/tools/dzpack.rs $(ROOT)/bootstrap/dzimage.rs
-	@mkdir -p $(BUILD_DIR)
-	$(RUSTC) --edition 2021 $< -o $@
-
-$(DFS_IMAGE_BIN): $(ROOT)/tools/dfs-image.rs $(ROOT)/kernel/src/fs/dfs.rs \
-                  $(ROOT)/kernel/src/fs/gpt.rs $(ROOT)/kernel/src/drivers/block.rs
-	@mkdir -p $(BUILD_DIR)
-	$(RUSTC) --edition 2021 $< -o $@
-
-# ------------------------------------------------------------------------------
-# dzImage
-# ------------------------------------------------------------------------------
+	$(DFS_IMAGE_BIN) --dump-kernel $(DZ_IMAGE) $(KERNEL)
 
 dzimage: $(DZ_IMAGE)
 
-$(DZ_IMAGE): $(KERNEL) $(DZPACK_BIN)
-	$(DZPACK_BIN) $(KERNEL) $@
+# A árvore que vira a raiz volátil é construída por ramfs.mk e o dzImage é
+# montado pelo DNU por cima dela (o kernel e o initramfs são membros do mesmo
+# contêiner).
+$(DZ_IMAGE): $(DNU_MK) $(wildcard $(DNU_DIR)/src/*.rs) \
+             $(wildcard $(DNU_DIR)/src/assets/*) \
+             $(wildcard $(DNU_DIR)/abi/imagineos_abi/src/*.rs) \
+             $(DNU_DIR)/dzimage.rs $(DNU_DIR)/tools/abi.rs \
+             $(wildcard $(BUILD_DIR)/ramfs/*)
+	@test -d $(DNU_DIR) || { echo "repositório DNU ausente em $(DNU_DIR)"; exit 1; }
+	$(MAKE) -C $(DNU_DIR) dzImage RAMFS_DIR=$(RAMFS_TREE)
+	@mkdir -p $(BUILD_DIR)
+	cp $(DNU_DIR)/.build/dzImage $(DZ_IMAGE)
+	$(DNU_DIR)/.build/dzimage info $(DZ_IMAGE)

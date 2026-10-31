@@ -1,0 +1,11 @@
+[package]
+name = "imagineos-userland"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "imagineos"
+path = "src/lib.rs"
+
+[dependencies]
+imagineos_abi = { path = "../../shared/abi" }

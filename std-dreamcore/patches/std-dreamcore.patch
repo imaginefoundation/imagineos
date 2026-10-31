@@ -1,0 +1,139 @@
+--- std/build.rs
++++ std/build.rs
+@@ -58,6 +58,7 @@
+         || target_os == "nuttx"
+         || target_os == "cygwin"
+         || target_os == "vexos"
++        || target_os == "dreamcore"
+ 
+         // See src/bootstrap/src/core/build_steps/synthetic_targets.rs
+         || env::var("RUSTC_BOOTSTRAP_SYNTHETIC_TARGET").is_ok()
+--- std/src/os/mod.rs
++++ std/src/os/mod.rs
+@@ -77,7 +77,7 @@
+ ))]
+ pub mod fd;
+ 
+-#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", doc))]
++#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", target_os = "dreamcore", doc))]
+ mod net;
+ 
+ // # Ordinary platforms
+--- std/src/os/unix/mod.rs
++++ std/src/os/unix/mod.rs
+@@ -66,6 +66,8 @@
+     pub use crate::os::illumos::*;
+     #[cfg(target_os = "l4re")]
+     pub use crate::os::l4re::*;
++    #[cfg(target_os = "dreamcore")]
++    pub use crate::os::unix::dreamcore::*;
+     #[cfg(target_os = "linux")]
+     pub use crate::os::linux::*;
+     #[cfg(target_os = "netbsd")]
+@@ -88,6 +90,8 @@
+     pub use crate::os::vxworks::*;
+ }
+ 
++#[unstable(feature = "dreamcore_os", issue = "none")]
++pub mod dreamcore;
+ pub mod ffi;
+ pub mod fs;
+ pub mod io;
+--- std/src/sys/args/unix.rs
++++ std/src/sys/args/unix.rs
+@@ -62,6 +62,7 @@
+ }
+ 
+ #[cfg(any(
++    target_os = "dreamcore",
+     target_os = "linux",
+     target_os = "android",
+     target_os = "freebsd",
+--- std/src/sys/paths/mod.rs
++++ std/src/sys/paths/mod.rs
+@@ -1,4 +1,14 @@
+ cfg_select! {
++    // Sem `/proc/self/exe` e sem `env::args` do loader: o caminho do executável
++    // não é consultável no ImagineOS.
++    // O ImagineOS é unix-like o bastante para reusar toda a camada de paths
++    // (separador `/`, `chdir`, `temp_dir`, `home_dir`). `current_exe` vem de
++    // `argv[0]`, como no fuchsia: o kernel não tem `/proc/self/exe`.
++    target_os = "dreamcore" => {
++        mod unix;
++        use unix as imp;
++        use unix::*;
++    }
+     target_os = "hermit" => {
+         mod hermit;
+         #[expect(dead_code)]
+@@ -68,3 +78,4 @@
+     JoinPathsError, SplitPaths, SplitPathsRef, chdir, current_exe, getcwd, home_dir, join_paths,
+     split_paths, split_paths_ref, temp_dir,
+ };
++
+--- std/src/sys/paths/unix.rs
++++ std/src/sys/paths/unix.rs
+@@ -410,7 +410,7 @@
+     crate::sys::pal::unsupported()
+ }
+ 
+-#[cfg(target_os = "fuchsia")]
++#[cfg(any(target_os = "fuchsia", target_os = "dreamcore"))]
+ pub fn current_exe() -> io::Result<PathBuf> {
+     #[cfg(test)]
+     use realstd::env;
+--- std/src/sys/random/mod.rs
++++ std/src/sys/random/mod.rs
+@@ -102,6 +102,9 @@
+         target_os = "xous",
+         target_os = "vexos",
+         target_os = "l4re",
++        // Sem `getrandom` no kernel: a variante `unsupported` semeia o hasher
++        // com o relógio/TSC (não é criptograficamente seguro — documentado).
++        target_os = "dreamcore",
+     ) => {
+         // FIXME: finally remove std support for wasm32-unknown-unknown
+         // FIXME: add random data generation to xous
+@@ -112,6 +115,7 @@
+ }
+ 
+ #[cfg(not(any(
++    target_os = "dreamcore",
+     target_os = "linux",
+     target_os = "android",
+     all(target_family = "wasm", target_os = "unknown"),
+--- std/src/sys/thread/mod.rs
++++ std/src/sys/thread/mod.rs
+@@ -59,7 +59,10 @@
+             target_os = "aix",
+             target_os = "wasi",
+         )))]
++        #[cfg(not(target_os = "dreamcore"))]
+         pub use unix::set_name;
++        #[cfg(target_os = "dreamcore")]
++        pub use unsupported::set_name;
+         #[cfg(any(
+             target_os = "freebsd",
+             target_os = "netbsd",
+--- std/src/sys/pal/unix/mod.rs
++++ std/src/sys/pal/unix/mod.rs
+@@ -36,6 +36,19 @@
+     reset_sigpipe(sigpipe);
+ 
+     stack_overflow::init();
++    // ImagineOS: o kernel ja montou o bloco TLS do executavel e gravou
++    // `IA32_FS_BASE`. Informamos a musl do tamanho (`libc.tls_size`), que e o
++    // que `__copy_tls` usa ao criar uma thread nova.
++    #[cfg(target_os = "dreamcore")]
++    {
++        unsafe extern "C" {
++            fn __libc_set_main_tls(size: usize, align: usize);
++        }
++        let info = libc::tls_info();
++        if info.size != 0 {
++            unsafe { __libc_set_main_tls(info.size as usize, info.alignment as usize) };
++        }
++    }
+     #[cfg(not(target_os = "vita"))]
+     crate::sys::args::init(argc, argv);
+ 

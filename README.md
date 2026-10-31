@@ -1,4 +1,4 @@
-# Imagine Operating System
+# Imagine Operating System (astrid-alpha1-v0.2.1)
 
 O ImagineOS é um sistema operacional x86_64 experimental e educacional, de codinome **Astrid**. O kernel é Rust freestanding e usa o protocolo de boot do Limine. Este é um estágio inicial de bring-up, ainda não é um sistema operacional de uso geral.
 
@@ -28,8 +28,11 @@ rodar `make iso` (o trecho de comandos acima já o cria). A imagem somente UEFI
 
 O kernel consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS do Limine. Ele instala a GDT/TSS e uma IDT de exceções fatais, inicializa um alocador de frames de 4 KiB e um heap bump de 1 MiB, monta o arquivo USTAR e carrega `/sbin/init` como PID 1. O init inicia o `/sbin/getty`, que inicia o `/bin/shell`; o shell resolve comandos externos em `/bin`.
 
-O código-fonte do kernel fica em `kernel/src/`, o carregador do Limine em
-`bootstrap/` e os aplicativos de userspace em `userland/apps/`. O USTAR provê o
+O código-fonte do kernel fica no repositório DNU (`dnu/`, checkout em `dnu/src/`; o Limine carrega o dzImage, que
+é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
+`common/programs/` (apps multi-módulo) e `common/utilities/` (comandos de
+arquivo único). Programas de userspace são empacotados no formato nativo **DEF**
+(magic `DNUF`) por `dnu-pack` — o kernel não carrega ELF de userspace. O USTAR provê o
 sistema de arquivos inicial em RAM e o fallback; quando existe uma partição DFS
 válida, sua árvore persistente é usada como raiz ativa. Ainda não há uma
 implementação genérica de `switch_root`.
@@ -48,8 +51,8 @@ de gerenciamento de senhas.
 > persistente. Mantenha essas imagens em máquinas isoladas e offline até que um
 > mecanismo persistente de gerenciamento de senhas substitua o padrão embutido
 > no caminho de autenticação do getty (o handler de login do getty em
-> `kernel/src/`, que hoje compara a senha digitada com o par `root`/`root`
-> embutido no código).
+> `common/programs/login/`, que hoje compara a senha digitada com o par
+> `root`/`root` embutido no código).
 
 O shell é propositalmente pequeno. Suas capacidades são:
 
@@ -58,7 +61,7 @@ O shell é propositalmente pequeno. Suas capacidades são:
 - **Utilitários externos:** os comandos são resolvidos via `PATH` e iniciados a
   partir de `/bin`; os utilitários incluídos são `ls`, `cat`, `grep` (busca por
   string exata), `mkdir`, `touch`, `rm`, `vi` e `globalconf`. O `argv` e as
-  variáveis de ambiente exportadas são repassados aos ELFs filhos.
+  variáveis de ambiente exportadas são repassados aos programas filhos.
 - **Fontes:** fontes PSF/PSF2 são procuradas em `ramfs/system/fonts`; glifos
   ASCII/portugueses embutidos são usados quando uma fonte carregada não tem
   determinado caractere. O cursor do prompt pisca enquanto a entrada é
@@ -69,8 +72,8 @@ O shell é propositalmente pequeno. Suas capacidades são:
 O `std` do Rust é desnecessário: o kernel permanece `no_std` e expõe operações de sistema por meio de suas próprias syscalls. A base USTAR é imutável; `mkdir`, `touch` e `rm` atualizam uma camada em memória de tamanho limitado, e as mudanças desaparecem ao reiniciar. O escalonamento é cooperativo round-robin; preempção por timer, recuperação de heap e permissões completas de W^X também estão pendentes.
 
 Programas Rust de usuário podem usar o crate `no_std` reutilizável em
-`userland/api/`. Os números de syscall e as estruturas de dados compartilhadas
-ficam em `shared/abi/`; a ABI v2 e suas convenções de erro e argumentos estão
+`common/userland/api/`. Os números de syscall e as estruturas de dados compartilhadas
+ficam em `common/shared/abi/`; a ABI v2 e suas convenções de erro e argumentos estão
 documentadas em
 [documentation/syscall-abi.md](documentation/syscall-abi.md). Essa API de
 userspace é específica do ImagineOS e não oferece `std` do Rust nem

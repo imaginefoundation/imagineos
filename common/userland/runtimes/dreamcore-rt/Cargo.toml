@@ -1,0 +1,16 @@
+[package]
+name = "dreamcore-rt"
+version = "0.1.0"
+edition = "2024"
+description = "Runtime de programas Rust no alvo x86_64-unknown-dreamcore"
+
+[lib]
+# `rlib` para o crate ser linkado estaticamente ao binário do usuário.
+crate-type = ["rlib"]
+# O ponto de entrada `_start` só deve entrar no binário final quando a crate
+# é a raiz (binário), não em testes de host.
+test = false
+doctest = false
+
+[dependencies]
+imagineos_abi = { path = "../../../shared/abi" }

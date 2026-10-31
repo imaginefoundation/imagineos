@@ -4,10 +4,11 @@
 #
 # Monta a ISO UEFI com a organização de um live CD Linux:
 #
-#   /boot/dzImage        kernel compactado (Dreamcore Zipped Image)
-#   /boot/initramfs.img  raiz volátil de boot (USTAR sobre RAMFS)
-#   /boot/bootstrap.elf  segunda fase do bootloader
+#   /boot/dzImage          DNU Zipped Image — kernel + initramfs num arquivo
 #   /EFI/BOOT/BOOTX64.EFI  Limine (bootloader EFI, registro El Torito)
+#
+# O `dzImage` é o único artefato de boot: o Limine o carrega como módulo e o
+# kernel extrai o `initramfs` da tabela de membros (ver `dnu/boot/boot.rs`).
 #
 # O xorriso produz ISO 9660 com Rock Ridge (-R), Joliet (-J) e El Torito
 # (--efi-boot-part), exatamente o combo que distribuições Linux usam.
@@ -21,21 +22,16 @@ include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 # outras etapas (que o make resolve recursivamente) em vez de tentar recriar
 # as regras de arquivo que vivem em kernel.mk/ramfs.mk.
 KERNEL_MK := $(ROOT)/build/kernel.mk
+TOOLS_MK  := $(ROOT)/build/tools.mk
 RAMFS_MK  := $(ROOT)/build/ramfs.mk
-
-# Nomes FHS instalados na ISO e no disco instalado.
-DZIMAGE_NAME     := dzImage
-INITRAMFS_NAME  := initramfs.img
-BOOTLOADER_NAME := bootstrap.elf
 
 .PHONY: iso run disk-image run-disk installer-disk run-installer \
         image-payloads
 
-# Payloads que a ISO consome: bootstrap + dzImage (kernel.mk) e ramfs.tar
-# (ramfs.mk). O ramfs, por sua vez, já puxa o kernel e o userland.
+# Payloads da ISO: o dzImage já contém a raiz volátil (montada por ramfs.mk).
 image-payloads:
-	$(MAKE) -f $(KERNEL_MK) bootstrap dzimage
-	$(MAKE) -f $(RAMFS_MK) ramfs-image
+	$(MAKE) -f $(RAMFS_MK) ramfs-tree
+	$(MAKE) -f $(KERNEL_MK) dzimage
 
 # ------------------------------------------------------------------------------
 # ISO
@@ -43,28 +39,27 @@ image-payloads:
 
 iso: image-payloads
 	@# Confirma que os artefatos existem antes de montar a ISO.
-	@test -f $(BOOTSTRAP) || (echo "bootstrap.elf ausente"; exit 1)
 	@test -f $(DZ_IMAGE) || (echo "dzImage ausente"; exit 1)
-	@test -f $(RAMFS_IMAGE) || (echo "ramfs.tar ausente"; exit 1)
 	@command -v xorriso >/dev/null || (echo "xorriso não encontrado"; exit 1)
 	@command -v mkfs.vfat >/dev/null || (echo "mkfs.vfat não encontrado"; exit 1)
 	@command -v mcopy >/dev/null || (echo "mcopy não encontrado"; exit 1)
 	@command -v mmd >/dev/null || (echo "mmd não encontrado"; exit 1)
 	rm -rf $(ISO_DIR)
 	mkdir -p $(ISO_DIR)/EFI/BOOT $(ISO_DIR)/boot $(DISTRO_DIR)
-	cp $(BOOTSTRAP) $(ISO_DIR)/boot/$(BOOTLOADER_NAME)
-	cp $(DZ_IMAGE) $(ISO_DIR)/boot/$(DZIMAGE_NAME)
-	cp $(RAMFS_IMAGE) $(ISO_DIR)/boot/$(INITRAMFS_NAME)
+	cp $(DZ_IMAGE) $(ISO_DIR)/boot/dzImage
 	cp $(ROOT)/boot/limine.conf $(ISO_DIR)/limine.conf
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI
-	dd if=/dev/zero of=$(ISO_DIR)/efi.img bs=1M count=64
+	@# Dimensiona a imagem FAT do ESP com folga para os payloads de boot
+	@# (BOOTX64.EFI + dzImage), em vez de um tamanho fixo.
+	@payload_bytes=$$( cat $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(ISO_DIR)/boot/dzImage 2>/dev/null | wc -c ); \
+		blocks=$$(( (payload_bytes + 1024*1024 - 1) / (1024*1024) + 16 )); \
+		echo "Tamanho da imagem EFI: $${blocks} MiB (payload: $${payload_bytes} bytes)"; \
+		dd if=/dev/zero of=$(ISO_DIR)/efi.img bs=1M count=$${blocks}
 	mkfs.vfat $(ISO_DIR)/efi.img
 	mmd -i $(ISO_DIR)/efi.img ::/EFI ::/EFI/BOOT ::/boot
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/limine.conf ::/limine.conf
-	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(BOOTLOADER_NAME) ::/boot/$(BOOTLOADER_NAME)
-	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(DZIMAGE_NAME) ::/boot/$(DZIMAGE_NAME)
-	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/$(INITRAMFS_NAME) ::/boot/$(INITRAMFS_NAME)
+	mcopy -i $(ISO_DIR)/efi.img $(ISO_DIR)/boot/dzImage ::/boot/dzImage
 	xorriso -as mkisofs -R -r -J -V DREAMCORE \
 		--efi-boot efi.img -efi-boot-part --efi-boot-image \
 		--protective-msdos-label $(ISO_DIR) -o $(ISO_IMAGE)
@@ -80,14 +75,15 @@ run: iso
 		-drive if=pflash,format=raw,unit=0,readonly=on,file="$(OVMF_CODE)" \
 		-cdrom $(ISO_IMAGE)
 
+# A imagem de disco é semeada com a raiz do próprio dzImage (o `dfs-image`
+# extrai o membro `initramfs`), sem um initramfs paralelo.
 disk-image: iso
-	$(MAKE) -f $(KERNEL_MK) $(DFS_IMAGE_BIN)
+	$(MAKE) -f $(TOOLS_MK) tools
 	@if [ -e "$(DISK_IMAGE)" ]; then \
 		printf 'Usando imagem de disco existente: %s\n' "$(DISK_IMAGE)"; \
 	else \
-		sh $(ROOT)/tools/install-disk.sh "$(DISK_IMAGE)" \
-			"$(ISO_DIR)/boot/$(BOOTLOADER_NAME)" "$(ISO_DIR)/boot/$(DZIMAGE_NAME)" \
-			"$(RAMFS_INST_IMG)" \
+		sh $(DNU_DIR)/scripts/install-disk.sh "$(DISK_IMAGE)" \
+			"$(ISO_DIR)/boot/dzImage" \
 			"$(ISO_DIR)/EFI/BOOT/BOOTX64.EFI" "$(ISO_DIR)/limine.conf" \
 			"$(ROOT)/boot/startup.nsh" "$(DFS_IMAGE_BIN)"; \
 	fi
