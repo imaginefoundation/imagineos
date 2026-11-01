@@ -7,9 +7,9 @@
 # `.build/dzImage`. Este workspace contém apenas o que roda no espaço de
 # usuário e o que liga o userspace ao kernel:
 #
-#   common/shared/abi        contrato binário (cópia de referência do DNU)
-#   common/userland/api      API do userspace
-#   common/userland/runtimes runtimes Rust e C
+#   imagine-common/abi        contrato binário (cópia de referência do DNU)
+#   imagine-common/userland/api      API do userspace
+#   imagine-common/userland/runtimes runtimes Rust e C
 #
 # O ABI é mantido aqui para a libc e o runtime Rust linkarem sem depender do
 # checkout do kernel; o DNU é a fonte de verdade do crate (ver
@@ -17,10 +17,10 @@
 
 [workspace]
 members = [
-    "common/shared/abi",
-    "common/userland/api",
-    "common/userland/runtimes/ImagineRustRuntime",
-    "common/userland/runtimes/ImagineCRuntime",
+    "imagine-common/abi",
+    "imagine-common/userland/api",
+    "imagine-common/userland/runtimes/ImagineRustRuntime",
+    "imagine-common/userland/runtimes/ImagineCRuntime",
 ]
 resolver = "2"
 

@@ -5,3 +5,27 @@
 [submodule "imagine-tools"]
 	path = imagine-tools
 	url = https://github.com/imaginefoundation/imagine-tools.git
+
+[submodule "imagine-common"]
+	path = imagine-common
+	url = https://github.com/imaginefoundation/imagine-common.git
+
+[submodule "imagine-shell"]
+	path = imagine-shell
+	url = https://github.com/imaginefoundation/imagine-shell.git
+
+[submodule "imagine-bootloader"]
+	path = imagine-bootloader
+	url = https://github.com/imaginefoundation/imagine-bootloader.git
+
+[submodule "imagine-video-server"]
+	path = imagine-video-server
+	url = https://github.com/imaginefoundation/imagine-video-server.git
+
+[submodule "imagine-compositor"]
+	path = imagine-compositor
+	url = https://github.com/imaginefoundation/imagine-compositor.git
+
+[submodule "imagine-desktop"]
+	path = imagine-desktop
+	url = https://github.com/imaginefoundation/imagine-desktop.git
