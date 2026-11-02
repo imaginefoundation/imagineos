@@ -5,11 +5,12 @@ third_party
 /third_party/
 third_party/*
 /target/
-/userland/target/
-/ramfs
-toolchain/
 /.testing
 /examples
+DONOTCOMMIT/
+/DONOTCOMMIT
+imagine-base/
+/imagine-base
 
 # Checkout do DNU dentro deste repositório: é repositório próprio e seus
 # artefatos de build não pertencem a este workspace.

@@ -17,10 +17,10 @@
 
 [workspace]
 members = [
-    "imagine-common/abi",
-    "imagine-common/userland/api",
-    "imagine-common/userland/runtimes/ImagineRustRuntime",
-    "imagine-common/userland/runtimes/ImagineCRuntime",
+    "imagine-base/abi",
+    "imagine-base/userland/api",
+    "imagine-base/userland/runtimes/ImagineRustRuntime",
+    "imagine-base/userland/runtimes/ImagineCRuntime",
 ]
 resolver = "2"
 
