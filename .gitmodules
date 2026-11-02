@@ -9,3 +9,7 @@
 [submodule "imagine-base"]
 	path = imagine-base
 	url = https://github.com/imaginefoundation/imagine-base.git
+
+[submodule "imagine-common"]
+	path = imagine-common
+	url = https://github.com/imaginefoundation/imagine-common.git
