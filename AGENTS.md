@@ -57,7 +57,6 @@ imagineOS/
 │   │   ├── runtimes/            # Runtimes Rust e C
 │   │   └── linker.ld            # Linker script de userspace
 │   ├── libc/                    # Libc estática (libdreamcore.a)
-│   ├── shell/                   # Shell do ImagineOS
 │   ├── gui/                     # Interface gráfica (GDI, Window Manager, Compositor)
 │   │   ├── gdi.rs
 │   │   ├── window.rs
@@ -73,7 +72,7 @@ imagineOS/
 │   ├── programs/
 │   │   ├── login/               # getty (login)
 │   │   └── sysman/              # init (PID 1)
-│   ├── shell/                   # Shell do ImagineOS
+│   ├── console/                 # Shell de linha de comando do ImagineOS
 │   ├── systemfetch/             # Utilitário systemfetch
 │   ├── utilities/               # Utilitários C (cat, ls, etc.)
 │   ├── userland/                # API e runtimes de userspace
@@ -99,6 +98,9 @@ imagineOS/
 
 ### Comandos de Build
 
+O kernel DNU possui um build independente em `dnu/` (Makefile) que produz
+**um único artefato final: `.build/dzImage`** (kernel ELF + initramfs opcional).
+
 ```bash
 # Inicializar submódulos
 git submodule update --init --recursive
@@ -107,33 +109,38 @@ git submodule update --init --recursive
 rustup toolchain install nightly
 rustup target add x86_64-unknown-none
 
-# Build completo (gera ISO)
+# Build do kernel DNU (gera o único artefato .build/dzImage)
+cd dnu
+make            # alias de make dzImage
+make dzImage    # kernel + initramfs opcional, empacotado em .build/dzImage
+make kernel     # apenas o ELF do kernel (target/.../imagineos-dnu-kernel)
+make tools      # ferramentas de host em .build/tools/ (dzimage, dnudebug,
+                # dnutest, dnuboot) — separadas da saída final
+make test       # suíte de testes do kernel no host
+make check      # checagem de tipos do kernel no alvo bare-metal
+make clean      # remove .build/ e target/
+
+# Voltar para a raiz do ImagineOS
+cd ..
+```
+
+O build completo do ImagineOS (ISO, imagem de disco, instalador) continua
+sendo gerado pelo `build.py` raiz e consome apenas o `.build/dzImage` do DNU.
+
+```bash
+# Build completo (gera ISO, consome o dzImage do DNU)
 python3 build.py iso
-
-# Build apenas o kernel
-python3 build.py kernel
-
-# Build apenas userland
-python3 build.py userland
-
-# Montar apenas a árvore do RAMFS
-python3 build.py ramfs
-
-# Compilar ferramentas de host (dnu-pack, dnulink, dfs-image, dzimage)
-python3 build.py tools
-
-# Gerar e rodar no QEMU
-python3 build.py run
 
 # Limpar artefatos
 python3 build.py clean
 ```
 
-### Resultado Esperado
+### Resultado Esperado (kernel DNU)
 
-- ISO: `.build/distro/dreamcore-YYYY-MM-DD-HH-MM-astrid.iso`
-- Kernel ELF: `.build/iso/kernel.elf`
-- dzImage: `.build/dzImage`
+- Único artefato publicado: `.build/dzImage` (kernel empacotado)
+- Kernel ELF: `dnu/target/x86_64-unknown-none/release/imagineos-dnu-kernel`
+- Ferramentas de host: `dnu/.build/tools/{dzimage,dnudebug,dnutest,dnuboot}`
+- ISO (ImagineOS): `.build/distro/dreamcore-YYYY-MM-DD-HH-MM-astrid.iso`
 
 ### Testar no QEMU
 
@@ -206,6 +213,41 @@ mod tests {
 3. **Não use `unsafe` desnecessariamente** — prefira código seguro quando possível
 4. **Não modifique o linker script sem entender as implicações** — endereços virtuais/físicos críticos
 5. **Sempre teste no QEMU antes de commitar**
+
+---
+
+## 4.5. Arquitetura da GUI em Userspace
+
+O ImagineOS mantém a interface gráfica **fora do kernel** (decisão de design, veja regras de ouro). Toda a pilha gráfica roda em Ring 3 e usa as syscalls de display expostas pelo kernel DNU.
+
+### Componentes
+
+| Componente | Localização | Função |
+|------------|-------------|--------|
+| **APIs de userspace** | `imagine-base/apis/` | APIs de janelas e desenho (mensagens WM_*, WndProc por janela, GDI) |
+| **Syscalls de display** | `dnu/src/abi/abi_display.rs` | `SYS_FB_INFO`, `SYS_FB_MAP`, `SYS_INPUT_POLL`, `SYS_CONSOLE_RELEASE`, `SYS_SURFACE_*` |
+| **PID 1 (init)** | `imagine-common/init/init.rs` | Inicializa o sistema, lança ws_server e shell, supervisiona filhos |
+| **Servidor de janelas** | `imagine-common/gui/main.rs` | Executa em userspace: gerencia framebuffer, janelas, input, renderização |
+| **GDI de userspace** | `imagine-common/gui/gdi.rs` | Desenho direto no framebuffer (retângulos, texto, cursor) |
+| **Window Manager** | `imagine-common/gui/wm.rs` | Lista de janelas, z-order, foco, renderização ordenada |
+| **Shell gráfico** | `imagine-common/explorer/main.rs` | Taskbar, área de trabalho, menu Iniciar, gerenciamento de janelas |
+
+### Fluxo de inicialização da GUI
+
+1. O kernel DNU sobe, monta o RAMFS e carrega `/sbin/init` como PID 1.
+2. O `init` lança o `ws_server` (`/bin/ws_server`), o `shell` (`/bin/shell`) e o `explorer` (`/bin/explorer`).
+3. O `ws_server` chama `SYS_FB_INFO` + `SYS_FB_MAP` para mapear o framebuffer.
+4. Chama `SYS_CONSOLE_RELEASE` para assumir a tela (o kernel para de desenhar nela).
+5. Cria superfícies (`SYS_SURFACE_CREATE`) para cada janela e envia `WM_NCCREATE` + `WM_CREATE` para o `WndProc` de cada janela.
+6. Entra em loop: `SYS_INPUT_POLL` (teclado/mouse) + `SYS_SURFACE_POLL` (eventos de clientes) + roteamento de mensagens para `WndProc`s + renderização local + `SYS_SURFACE_PRESENT`.
+
+### Como adicionar uma nova janela de aplicativo
+
+1. Crie o programa em `imagine-common/programs/` ou `imagine-tools/programs/`.
+2. No programa, chame `SYS_SURFACE_CREATE` para registrar uma superfície de pixels.
+3. Desenhe no buffer mapeado e chame `SYS_SURFACE_FLUSH` + `SYS_SURFACE_PRESENT` para exibir.
+4. O `ws_server` faz o compost (composição) de todas as superfícies visíveis na ordem Z.
+
 
 ---
 

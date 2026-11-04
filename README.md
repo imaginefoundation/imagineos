@@ -69,7 +69,7 @@ O kernel DNU consome o HHDM, o mapa de memória, o framebuffer e o módulo RAMFS
 O código-fonte do kernel DNU fica no repositório `dnu/` (checkout em `dnu/src/`; o Limine carrega o dzImage, que
 é o próprio ELF do kernel, direto na RAM) e os aplicativos de userspace em
 `imagine-common/programs/` (apps compartilhados como init e getty),
-`imagine-base/shell/` (shell) e
+`imagine-common/console/` (shell de linha de comando) e
 `imagine-tools/utilities/` (comandos de arquivo único). Programas de userspace
 são empacotados no formato nativo **DEF** (magic `DNUF`) por `dnu-pack` — o
 kernel DNU não carrega ELF de userspace. O USTAR provê o sistema de arquivos

@@ -3,26 +3,23 @@
 version = 4
 
 [[package]]
+name = "imagineos"
+version = "0.1.0"
+
+[[package]]
+name = "imagineos-abi"
+version = "0.1.0"
+
+[[package]]
 name = "imagineos-crt"
 version = "0.1.0"
 dependencies = [
- "imagineos-userland",
+ "imagineos",
 ]
 
 [[package]]
 name = "imagineos-rt"
 version = "0.1.0"
 dependencies = [
- "imagineos-userland",
+ "imagineos",
 ]
-
-[[package]]
-name = "imagineos-userland"
-version = "0.1.0"
-dependencies = [
- "imagineos_abi",
-]
-
-[[package]]
-name = "imagineos_abi"
-version = "0.1.0"
