@@ -7,10 +7,6 @@ name = "imagineos"
 version = "0.1.0"
 
 [[package]]
-name = "imagineos-abi"
-version = "0.1.0"
-
-[[package]]
 name = "imagineos-crt"
 version = "0.1.0"
 dependencies = [
