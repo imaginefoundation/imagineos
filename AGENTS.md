@@ -13,7 +13,7 @@ O **ImagineOS** é um sistema operacional x86_64 experimental e educacional, de 
 | Componente | Nome | Localização | Responsabilidade |
 |-----------|------|-------------|------------------|
 | **Kernel** | DNU / Dreamcore | `dnu/` | Gerenciamento de memória, drivers, syscalls, execução de processos, framebuffer |
-| **Usuáriospace** | ImagineOS | `imagine-base/`, `imagine-common/`, `imagine-tools/` | Programas, shell, libc, runtimes, ferramentas de build |
+| **Userspace** | ImagineOS | `imagine-base/`, `imagine-common/`, `imagine-tools/` | Programas, shell, libc, runtimes, ferramentas de build |
 
 **Regra de ouro:** O kernel DNU **não** deve conter código de interface gráfica, janelas, compositor ou instalador de disco. Esses componentes pertencem ao userspace (`imagine-base/gui/`, `imagine-common/programs/`).
 
@@ -51,7 +51,6 @@ imagineOS/
 │   ├── .build/                  # Artefatos de build (dzImage, dnu-pack, etc.)
 │   └── linker.ld                # Linker script do kernel
 ├── imagine-base/                # Código compartilhado do ImagineOS
-│   ├── abi/                     # Contrato binário (DEF, syscalls, estruturas)
 │   ├── userland/
 │   │   ├── api/                 # API do userspace (syscalls, structs)
 │   │   ├── runtimes/            # Runtimes Rust e C
@@ -293,7 +292,7 @@ O ImagineOS mantém a interface gráfica **fora do kernel** (decisão de design,
 
 ### Adicionar uma Nova Syscall
 
-1. Adicione a constante `SYS_*` em `imagine-base/abi/src/lib.rs`
+1. Adicione a constante `SYS_*` em `dnu/abi/src/syscall.rs`
 2. Implemente o handler em um arquivo `abi_*.rs` (ex: `abi_fs.rs`, `abi_process.rs`)
 3. Registre o dispatch em `abi_dispatch.rs`
 4. Atualize a documentação da ABI se necessário
@@ -307,7 +306,7 @@ O ImagineOS mantém a interface gráfica **fora do kernel** (decisão de design,
 
 ### Adicionar uma Syscall de Sistema
 
-1. Adicione a constante em `imagine-base/abi/src/lib.rs`
+1. Adicione a constante em `dnu/abi/src/syscall.rs`
 2. Implemente o handler em `dnu/src/abi_*.rs`
 3. Adicione o dispatch em `dnu/src/abi_dispatch.rs`
 4. Teste com um programa de userspace

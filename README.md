@@ -9,7 +9,7 @@ O código está organizado em três submódulos principais:
 | Submódulo | Conteúdo |
 |-----------|----------|
 | `dnu/` | Kernel DNU (Rust freestanding), formato DEF, ferramentas de host (dnu-pack, dnulink, dfs-image, dzimage), sistema de arquivos DFS |
-| `imagine-base/` | Código compartilhado: ABI (`abi/`), API do userspace (`userland/api/`), libc (`libc/`), runtimes (`userland/runtimes/`), linker script (`linker.ld`), GUI (`gui/`), config de boot (`config/boot/`), shell (`shell/`), sistema de arquivos RAMFS (`ramfs/`), std-dreamcore |
+| `imagine-base/` | Código compartilhado: API do userspace (`userland/api/`), libc (`libc/`), runtimes (`userland/runtimes/`), linker script (`linker.ld`), GUI (`gui/`), config de boot (`config/boot/`), shell (`shell/`), sistema de arquivos RAMFS (`ramfs/`), std-dreamcore |
 | `imagine-common/` | Código compartilhado adicional: programas (`programs/login/`, `programs/sysman/`), shell (`shell/`), systemfetch (`systemfetch/`), utilitários (`utilities/`) |
 | `imagine-tools/` | Ferramentas de build, isobuilder, utilitários de host |
 
@@ -113,7 +113,7 @@ O `std` do Rust é desnecessário: o kernel DNU permanece `no_std` e expõe oper
 
 Programas Rust de usuário podem usar o crate `no_std` reutilizável em
 `imagine-base/userland/api/`. Os números de syscall e as estruturas de dados
-compartilhadas ficam em `imagine-base/abi/`; a ABI v2 e suas convenções de
+compartilhadas ficam em `dnu/abi/`; a ABI v2 e suas convenções de
 erro e argumentos estão documentadas em
 [imagine-common/documentation/runtime.md](imagine-common/documentation/runtime.md). Essa API de
 userspace é específica do DNU e não oferece `std` do Rust nem
